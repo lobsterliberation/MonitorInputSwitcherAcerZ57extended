@@ -1,5 +1,6 @@
 # Builds the Linux and Windows binaries and publishes them as a GitHub release when a version tag
 # is pushed:  git tag v1.0.0 && git push origin v1.0.0
+# A release published on the website (which creates its tag) works too: the binaries are added to it.
 # It can also be started by hand (Actions tab > Release > Run workflow, or `gh workflow run
 # release.yml`) to check that both builds pass: that builds, tests and keeps the binaries as run
 # artifacts, without publishing a release.
@@ -8,7 +9,14 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  release:
+    types: [published]
   workflow_dispatch:
+
+# Publishing a release on the website can also fire the tag push: run once per tag at a time.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -83,10 +91,15 @@ jobs:
         with:
           merge-multiple: true
 
-      - name: Create the release
+      - name: Create the release, or add the binaries to one published on the website
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-            --title "Monitor Input Switcher $GITHUB_REF_NAME" --generate-notes \
-            monitor-input-switcher-*
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber \
+              monitor-input-switcher-*
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --title "Monitor Input Switcher $GITHUB_REF_NAME" --generate-notes \
+              monitor-input-switcher-*
+          fi
