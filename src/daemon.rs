@@ -228,6 +228,10 @@ impl App {
                     self.settings_open = false;
                     platform::block_shortcuts_for_capture(false); // in case Settings died while recording
                     self.ui.suspend_shortcuts(false);
+                    // Register again and say which shortcuts failed: a combination set in
+                    // Settings that another program owns would otherwise fail silently, since the
+                    // reload on Save happened while shortcuts were suspended.
+                    self.register_hotkeys(true);
                     self.update_tray();
                 }
                 Ev::Ipc(req, reply) => {
