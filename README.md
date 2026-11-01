@@ -1,4 +1,16 @@
-# Monitor Input Switcher
+# Monitor Input Switcher (extended)
+
+> **This is a modified version** of [Monitor Input Switcher](https://github.com/a-elkaim/MonitorInputSwitcher)
+> by Allan ELKAIM, changed by lobsterliberation in November 2026. It adds:
+>
+> - **Picture profiles:** named sets of brightness, contrast, colour temperature and colour gains,
+>   applied from a Picture menu in the tray, a shortcut, or `picture <NAME>`
+> - **Brightness shortcuts:** `Ctrl+Alt+Shift+Up` / `Down` by default, plus a `brightness` command
+>
+> Downloads are on [this fork's releases page](https://github.com/lobsterliberation/MonitorInputSwitcherAcerZ57extended/releases/latest).
+> Everything else works as in the original, and settings files are compatible both ways (the
+> original ignores the new settings). Please report problems with the new features here, not to the
+> original author. The rest of this README is the original author's, updated for the new features.
 
 I have one monitor (an Alienware AW3926QW) shared by two computers: a desktop PC on DisplayPort and
 a laptop on USB-C. Switching between them meant reaching behind the screen, opening the on-screen
@@ -86,13 +98,13 @@ have it on by default, some hide it in a "System" or "Others" section.
 ## Download
 
 Ready-made binaries for Linux (x86_64) and Windows (x86_64) are on the
-[Releases page](https://github.com/a-elkaim/MonitorInputSwitcher/releases/latest). You can also build
+[Releases page](https://github.com/lobsterliberation/MonitorInputSwitcherAcerZ57extended/releases/latest). You can also build
 it yourself, see below.
 
 ## Install on Linux (KDE Plasma)
 
 Either download `monitor-input-switcher-<version>-linux-x86_64.tar.gz` from the
-[latest release](https://github.com/a-elkaim/MonitorInputSwitcher/releases/latest) and extract it, or
+[latest release](https://github.com/lobsterliberation/MonitorInputSwitcherAcerZ57extended/releases/latest) and extract it, or
 clone this repository and build it (step 2). Run the commands below from the extracted folder or
 the repository root.
 
@@ -145,7 +157,7 @@ creates or deletes it.
 ## Install on Windows
 
 The easiest way: download `monitor-input-switcher-<version>-windows-x86_64.exe` from the
-[latest release](https://github.com/a-elkaim/MonitorInputSwitcher/releases/latest), put it wherever
+[latest release](https://github.com/lobsterliberation/MonitorInputSwitcherAcerZ57extended/releases/latest), put it wherever
 you like and start it once. The exe isn't code-signed, so Windows SmartScreen may warn you the first
 time: click "More info", then "Run anyway".
 
@@ -327,7 +339,8 @@ docs/screenshots/     the screenshots above
 
 ## License
 
-Copyright (C) 2026 Allan ELKAIM
+Copyright (C) 2026 Allan ELKAIM. Modified in November 2026 by lobsterliberation (picture profiles and
+brightness shortcuts).
 
 This project is licensed under the [GNU General Public License v3.0 or later](LICENSE). You're free
 to use, modify and share it, as long as you keep the credit and copyright notices, and any version

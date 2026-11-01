@@ -1427,7 +1427,7 @@ dependencies = [
 
 [[package]]
 name = "monitor-input-switcher"
-version = "1.3.0"
+version = "1.3.0-ext"
 dependencies = [
  "eframe",
  "image",
