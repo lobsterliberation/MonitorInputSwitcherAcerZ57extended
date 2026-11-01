@@ -1,5 +1,5 @@
 //! Monitor Input Switcher: switch the monitor input over DDC/CI, from the tray or a global
-//! shortcut, on Linux (KDE Plasma) and Windows.
+//! shortcut, on Linux (KDE Plasma), Windows and macOS (Apple Silicon).
 //!
 //! No arguments starts the tray app. Subcommands control the running app, or act directly on the
 //! monitor when it isn't running.
@@ -125,7 +125,7 @@ fn main() {
     }
 
     let code = match cmd {
-        "run" => daemon::run(),
+        "run" => platform::run_daemon(daemon::run),
         "settings-window" => settings::run(),
         "help" | "-h" | "--help" => {
             println!("{USAGE}");

@@ -23,7 +23,7 @@ found them cumbersome for something I want to do with a single key press. So I w
 lightweight and efficient approach: one small binary with no runtime or external tools, which talks
 to the monitor directly and switches in a fraction of a second.
 
-It runs on Windows and Linux (KDE Plasma). I built and tested it on my own screen, but nothing in it
+It runs on Windows, Linux (KDE Plasma) and macOS (Apple Silicon). I built and tested it on my own screen, but nothing in it
 is specific to that model: it should work with any monitor that implements DDC/CI. On first run it
 asks the monitor which inputs it has and sets itself up from that.
 
@@ -49,14 +49,14 @@ other one.
 Everything lives in one Rust codebase. The config, automatic setup, "Next input", the Settings
 window (egui) and the command line are shared; only the platform layer differs:
 
-| | Linux (KDE Plasma) | Windows |
-|---|---|---|
-| DDC/CI | Raw I2C on `/dev/i2c-N` (no external tool) | Monitor Configuration API (`dxva2.dll`) |
-| Global shortcuts | KDE `kglobalaccel` (works on Wayland) | `RegisterHotKey` |
-| Tray and notifications | StatusNotifierItem + desktop notifications | `Shell_NotifyIcon` + balloons |
-| Starts at login | `~/.config/autostart/` | `HKCU\...\Run` |
-| Single instance, CLI transport | `flock` + Unix socket | named mutex + named pipe |
-| Config | `~/.config/monitor-input-switcher/config.json` | `%APPDATA%\MonitorInputSwitcher\config.json` |
+| | Linux (KDE Plasma) | Windows | macOS (Apple Silicon) |
+|---|---|---|---|
+| DDC/CI | Raw I2C on `/dev/i2c-N` (no external tool) | Monitor Configuration API (`dxva2.dll`) | IOKit `IOAVService` I2C (no external tool) |
+| Global shortcuts | KDE `kglobalaccel` (works on Wayland) | `RegisterHotKey` | Carbon `RegisterEventHotKey` (no Accessibility permission) |
+| Tray and notifications | StatusNotifierItem + desktop notifications | `Shell_NotifyIcon` + balloons | Menu bar item + Notification Center (via `osascript`) |
+| Starts at login | `~/.config/autostart/` | `HKCU\...\Run` | `~/Library/LaunchAgents/` |
+| Single instance, CLI transport | `flock` + Unix socket | named mutex + named pipe | `flock` + Unix socket |
+| Config | `~/.config/monitor-input-switcher/config.json` | `%APPDATA%\MonitorInputSwitcher\config.json` | `~/Library/Application Support/MonitorInputSwitcher/config.json` |
 
 ## What it does
 
@@ -97,7 +97,7 @@ have it on by default, some hide it in a "System" or "Others" section.
 
 ## Download
 
-Ready-made binaries for Linux (x86_64) and Windows (x86_64) are on the
+Ready-made binaries for Linux (x86_64), Windows (x86_64) and macOS (Apple Silicon) are on the
 [Releases page](https://github.com/lobsterliberation/MonitorInputSwitcherAcerZ57extended/releases/latest). You can also build
 it yourself, see below.
 
@@ -179,6 +179,42 @@ if the icon is missing, look for a "Could not embed the Windows icon" warning in
 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. It's updated to the exe's current path at each
 start, so you can move the exe and just start it again.
 
+## Install on macOS (Apple Silicon)
+
+Download `monitor-input-switcher-<version>-macos-arm64.zip` from the
+[latest release](https://github.com/lobsterliberation/MonitorInputSwitcherAcerZ57extended/releases/latest), unzip it, move
+`MonitorInputSwitcher.app` to Applications and open it. It lives in the menu bar (no Dock icon). The
+app isn't notarized, so the first time macOS says it can't verify the developer: right-click the app
+and choose Open, or run `xattr -dr com.apple.quarantine /Applications/MonitorInputSwitcher.app`.
+
+To build it yourself, you'll need [Rust](https://rustup.rs) and the Xcode command line tools
+(`xcode-select --install`):
+
+```bash
+./scripts/build-macos.sh        # builds target/release/MonitorInputSwitcher.app
+cp -R target/release/MonitorInputSwitcher.app /Applications/
+open /Applications/MonitorInputSwitcher.app
+```
+
+No permissions to grant: DDC/CI and the global shortcuts don't need Accessibility or Input
+Monitoring access. Notifications appear under "Script Editor" in System Settings > Notifications,
+since they're shown through `osascript`; the first one may ask you to allow them.
+
+Plug the monitor into a USB-C/Thunderbolt port (DisplayPort over USB-C works). The built-in HDMI
+port of some Macs (M1 Mac mini, several MacBook Pro models) does not pass DDC/CI, and neither do
+DisplayLink adapters. Intel Macs aren't supported.
+
+"Open at login" is the LaunchAgent
+`~/Library/LaunchAgents/io.github.a-elkaim.monitor-input-switcher.plist`, pointing at the app's
+current path; it takes effect from the next login. For the command line, link the binary onto your
+`PATH`:
+
+```bash
+ln -s /Applications/MonitorInputSwitcher.app/Contents/MacOS/monitor-input-switcher /usr/local/bin/
+```
+
+On macOS, `Cmd` can be used in shortcuts (it is saved as `Cmd`; `Option` is accepted for `Alt`).
+
 ## Command line
 
 ```bash
@@ -199,14 +235,15 @@ monitor-input-switcher quit
 ```
 
 On Windows it's `monitor-input-switcher.exe`, from PowerShell or cmd. The commands go to the running
-app (over `$XDG_RUNTIME_DIR/monitor-input-switcher.sock` on Linux, a named pipe on Windows), so DDC
-operations never overlap. If the app isn't running, `switch`, `next`, `picture`, `brightness`, `get` and
-`list` talk to the monitor directly. `export` and `import` work either way; `import` has a running app reload the new
+app (over `$XDG_RUNTIME_DIR/monitor-input-switcher.sock` on Linux, `$TMPDIR/monitor-input-switcher.sock`
+on macOS, a named pipe on Windows), so DDC operations never overlap. If the app isn't running,
+`switch`, `next`, `picture`, `brightness`, `get` and `list` talk to the monitor directly. `export` and
+`import` work either way; `import` has a running app reload the new
 settings.
 
 ## Config
 
-Both systems use the same JSON format:
+Every system uses the same JSON format:
 
 ```json
 {
@@ -231,11 +268,11 @@ Both systems use the same JSON format:
 ```
 
 `MonitorName` is matched against the EDID model name. `MonitorDevice` optionally narrows the match:
-`\\.\DISPLAY1` on Windows, `/dev/i2c-N` on Linux (a value from the other OS is ignored). With no
+`\\.\DISPLAY1` on Windows, `/dev/i2c-N` on Linux, `av:N` on macOS (a value from another OS is ignored). With no
 `MonitorName`, the only (or first) DDC/CI monitor is used. `Value` is the MCCS input code (VCP `0x60`).
 The standard codes are `0x0F`/`0x10` DisplayPort-1/2, `0x11`/`0x12` HDMI-1/2, `0x03`/`0x04` DVI-1/2
-and `0x01`/`0x02` VGA-1/2; `0x1B` is commonly USB-C. The Windows key is written `Win` on Windows and
-`Meta` on Linux; both are accepted.
+and `0x01`/`0x02` VGA-1/2; `0x1B` is commonly USB-C. The Windows key is written `Win` on Windows,
+`Meta` on Linux and `Cmd` on macOS; all are accepted everywhere.
 
 `Profiles` is optional (older configs have none). Each profile's `Values` may hold `Brightness`
 (VCP `0x10`), `Contrast` (`0x12`), `ColorPreset` (`0x14`: 5 = 6500K, 6 = 7500K, 8 = 9300K, 11 = User 1
@@ -276,6 +313,19 @@ directly, so a switch takes about 30 ms.
 | Single instance | `flock` on `$XDG_RUNTIME_DIR/monitor-input-switcher.lock`. |
 | Notifications | `org.freedesktop.Notifications`. |
 
+### DDC/CI on macOS
+
+macOS has no public DDC/CI API. On Apple Silicon the app uses IOKit's `IOAVService` I2C functions,
+the same private API m1ddc, MonitorControl and BetterDisplay rely on. Each external display has a
+`DCPAVServiceProxy` entry in the IORegistry (`Location` = `External`), listed after the framebuffer
+entry whose `DisplayAttributes` give its model name; displays are numbered `av:0`, `av:1`... in that
+order. The packets are the same as on Linux (the leading `0x51` goes in the call's "data address"
+argument). Apple Silicon sometimes drops a write that reports success, so every request is sent twice
+10 ms apart, and replies are read after 50 ms.
+
+The menu bar item and global shortcuts need AppKit on the main thread, so on macOS the tray app's
+event loop runs on a second thread and talks to AppKit through the main dispatch queue.
+
 ### Keyboard layouts and Shift+digit shortcuts (KDE)
 
 KWin drops Shift from a shortcut when Shift was needed to type a non-letter. As a result,
@@ -284,8 +334,9 @@ layouts from `~/.config/kxkbrc` and registers every variant, so the shortcut wor
 `us`. One side effect on the `us` layout: `Ctrl+Alt+1` *without* Shift also triggers it. Digit-row
 keys are recorded by position, as on Windows.
 
-Punctuation keys, on both systems, are recorded as the character your layout puts on them: the key
-left of `1` is saved as `²` on a French layout and as `` ` `` on a US one.
+Punctuation keys, on Linux and Windows, are recorded as the character your layout puts on them: the key
+left of `1` is saved as `²` on a French layout and as `` ` `` on a US one. On macOS shortcuts are
+physical keys, so punctuation keys are saved by their US name.
 
 ### Quirks I ran into
 
@@ -309,7 +360,10 @@ These come from my monitor; yours may behave differently, and the app tries not 
   Ctrl/Alt/Shift are still held. On Windows those keys stayed pressed, so on an input-switching
   shortcut (not brightness or picture shortcuts, which can be tapped repeatedly) the app sends key-up events for any held modifier (`SendInput`), waits 30 ms, then switches. On Linux
   the kernel removes the keyboard's input device and libinput/KWin release every key held on it, so
-  the app switches immediately. If modifiers ever do stick, please report it.
+  the app switches immediately. macOS behaves like Linux here (the keyboard's device goes away with
+  its keys). If modifiers ever do stick, please report it.
+- **"The monitor does not answer DDC/CI"** (macOS): check DDC/CI in the monitor's menu and that the
+  monitor is on USB-C/Thunderbolt rather than the Mac's HDMI port.
 - **See the logs** (Linux): run it from a terminal with
   `monitor-input-switcher quit; monitor-input-switcher`.
 
@@ -318,11 +372,12 @@ These come from my monitor; yours may behave differently, and the app tries not 
 ```
 cargo test                                        # unit tests
 cargo check --target x86_64-pc-windows-msvc       # type-check the Windows build from Linux
+cargo check --target aarch64-apple-darwin         # type-check the macOS build from Linux
 ```
 
 To publish a release, bump `version` in `Cargo.toml`, commit, then push a matching tag:
 `git tag v1.0.0 && git push origin v1.0.0`. The `Release` workflow (`.github/workflows/release.yml`)
-builds and tests both systems and attaches the binaries to a new GitHub release. To check that both
+builds and tests all three systems and attaches the binaries to a new GitHub release. To check that both
 builds pass before tagging, run it by hand with `gh workflow run release.yml` (or Actions > Release >
 Run workflow): it builds and tests without publishing anything, and keeps the binaries as artifacts
 of the run.
@@ -331,8 +386,10 @@ of the run.
 src/                  shared code: config, daemon, Settings window, CLI, capabilities parsing
 src/platform/linux/   I2C DDC/CI, kglobalaccel + keyboard layouts, StatusNotifierItem tray, Unix socket
 src/platform/windows/ dxva2 DDC/CI, RegisterHotKey, Shell_NotifyIcon tray, named pipe, Run key
+src/platform/macos/   IOAVService DDC/CI, Carbon hotkeys, menu bar item, Unix socket, LaunchAgent
+src/platform/ddcci.rs DDC/CI packet framing shared by the Linux and macOS backends
 assets/               icons (PNG for the tray and windows, ICO embedded in the Windows exe)
-scripts/              build.sh / build.bat, plus the Linux install / uninstall / one-time system setup scripts
+scripts/              build.sh / build.bat / build-macos.sh, plus the Linux install / uninstall / one-time system setup scripts
 docs/screenshots/     the screenshots above
 .github/workflows/    the release workflow
 ```

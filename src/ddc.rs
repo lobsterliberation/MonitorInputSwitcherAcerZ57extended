@@ -15,7 +15,7 @@ pub const INPUT_VCP: u8 = 0x60;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct DisplayInfo {
-    pub bus: String,   // device id: "/dev/i2c-20" (Linux) or "\\\\.\\DISPLAY1" (Windows)
+    pub bus: String,   // device id: "/dev/i2c-20", "\\\\.\\DISPLAY1" or "av:0" (macOS)
     pub model: String, // EDID model name, e.g. "AW3926QW"
     pub mfg: String,
     pub serial: String,

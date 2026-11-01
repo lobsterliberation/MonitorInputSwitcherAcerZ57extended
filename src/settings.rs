@@ -453,7 +453,10 @@ impl SettingsApp {
             else {
                 continue;
             };
-            let plain = !(modifiers.ctrl || modifiers.alt || modifiers.shift);
+            // Command is a normal shortcut modifier on macOS; elsewhere the Windows/Super key
+            // is left to the system (KDE lets it be set in System Settings).
+            let meta = cfg!(target_os = "macos") && modifiers.mac_cmd;
+            let plain = !(modifiers.ctrl || modifiers.alt || modifiers.shift || meta);
             let slot = match capture {
                 Capture::Row(i) => match self.rows.get_mut(i) {
                     Some(r) => &mut r.hotkey,
@@ -493,7 +496,7 @@ impl SettingsApp {
                         ctrl: modifiers.ctrl,
                         alt: modifiers.alt,
                         shift: modifiers.shift,
-                        meta: false,
+                        meta,
                         key: name,
                     });
                 }

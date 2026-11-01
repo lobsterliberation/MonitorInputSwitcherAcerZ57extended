@@ -1,4 +1,4 @@
-//! Everything that differs between Linux and Windows lives behind this module. Each OS module
+//! Everything that differs between Linux, Windows and macOS lives behind this module. Each OS module
 //! provides the same items:
 //!
 //! - `Ui`: tray icon + menu, notifications, and global shortcuts
@@ -6,7 +6,7 @@
 //! - `block_shortcuts_for_capture`: lets the Settings window record a combination that is in use
 //! - `ddc`: `list_displays`, `open`, `is_device`, and `Bus` (`get_vcp`, `set_vcp`, `capabilities`)
 //! - `ipc`: `instance_lock`, `connect`, `listen`, `cleanup` (single instance + CLI transport)
-//! - `config_dir`, `autostart`, `META_NAME`, `START_WITH_LOGIN`, `attach_console`
+//! - `config_dir`, `autostart`, `META_NAME`, `START_WITH_LOGIN`, `attach_console`, `run_daemon`
 
 use crate::hotkey::Hotkey;
 
@@ -20,8 +20,24 @@ mod windows;
 #[cfg(windows)]
 pub use windows::*;
 
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::*;
+
+/// DDC/CI packet framing for the backends that write raw I2C.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod ddcci;
+
+/// Runs the tray app. macOS needs AppKit on the main thread, so it moves the app to another
+/// thread there; elsewhere this just calls it.
+#[cfg(not(target_os = "macos"))]
+pub fn run_daemon(run: fn() -> i32) -> i32 {
+    run()
+}
+
 /// What the tray menu shows.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct TrayModel {
     pub header: String,
     /// (name, shortcut, checked = current input)
@@ -46,7 +62,7 @@ pub enum UiEvent {
     /// A global shortcut was pressed (action id).
     Hotkey(String),
     /// The user changed a shortcut outside the app (KDE System Settings).
-    #[cfg_attr(windows, allow(dead_code))]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     HotkeyChanged(String, Option<Hotkey>),
 }
 

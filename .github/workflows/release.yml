@@ -1,4 +1,4 @@
-# Builds the Linux and Windows binaries and publishes them as a GitHub release when a version tag
+# Builds the Linux, Windows and macOS (Apple Silicon) binaries and publishes them as a GitHub release when a version tag
 # is pushed:  git tag v1.0.0 && git push origin v1.0.0
 # A release published on the website (which creates its tag) works too: the binaries are added to it.
 # It can also be started by hand (Actions tab > Release > Run workflow, or `gh workflow run
@@ -30,6 +30,8 @@ jobs:
             name: linux
           - os: windows-latest
             name: windows
+          - os: macos-14
+            name: macos
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -75,12 +77,20 @@ jobs:
         shell: bash
         run: cp target/release/monitor-input-switcher.exe "monitor-input-switcher-${GITHUB_REF_NAME}-windows-x86_64.exe"
 
+      - name: Package (macOS)
+        if: matrix.name == 'macos'
+        run: |
+          ./scripts/build-macos.sh
+          ditto -c -k --keepParent target/release/MonitorInputSwitcher.app \
+            "monitor-input-switcher-${GITHUB_REF_NAME}-macos-arm64.zip"
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
           path: |
             monitor-input-switcher-*.tar.gz
             monitor-input-switcher-*.exe
+            monitor-input-switcher-*.zip
 
   release:
     needs: build
