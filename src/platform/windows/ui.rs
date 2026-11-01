@@ -59,8 +59,8 @@ struct State {
     model: TrayModel,
     icon: HICON,
     actions: Vec<ShortcutAction>,
-    /// (RegisterHotKey id, action id, hotkey)
-    registered: Vec<(i32, String, Hotkey)>,
+    /// (RegisterHotKey id, action id, hotkey, moves the keyboard)
+    registered: Vec<(i32, String, Hotkey, bool)>,
     suspended: bool,
 }
 
@@ -132,7 +132,7 @@ impl State {
     }
 
     fn unregister_all(&mut self) {
-        for (id, _, _) in self.registered.drain(..) {
+        for (id, _, _, _) in self.registered.drain(..) {
             unsafe {
                 let _ = UnregisterHotKey(Some(self.hwnd), id);
             }
@@ -153,7 +153,8 @@ impl State {
                 RegisterHotKey(Some(self.hwnd), id, keys::modifiers(hk), u32::from(vk)).is_ok()
             });
             if ok {
-                self.registered.push((id, action.id.clone(), hk.clone()));
+                self.registered
+                    .push((id, action.id.clone(), hk.clone(), action.moves_keyboard));
             } else {
                 failed.push(action.id.clone());
             }
@@ -326,15 +327,17 @@ fn show_menu(hwnd: HWND) {
 }
 
 fn on_hotkey(id: i32) {
-    let Some(Some((action, hk))) = with_state(|s| {
+    let Some(Some((action, hk, moves_keyboard))) = with_state(|s| {
         s.registered
             .iter()
-            .find(|(i, _, _)| *i == id)
-            .map(|(_, a, hk)| (a.clone(), hk.clone()))
+            .find(|(i, _, _, _)| *i == id)
+            .map(|(_, a, hk, m)| (a.clone(), hk.clone(), *m))
     }) else {
         return;
     };
-    release_held_keys(&hk);
+    if moves_keyboard {
+        release_held_keys(&hk);
+    }
     with_state(|s| s.send(UiEvent::Hotkey(action)));
 }
 

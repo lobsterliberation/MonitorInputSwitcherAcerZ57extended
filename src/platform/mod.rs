@@ -56,6 +56,11 @@ pub struct ShortcutAction {
     pub id: String,
     pub friendly: String,
     pub hotkey: Option<Hotkey>,
+    /// The action switches the input, which can move the keyboard to the other computer (the
+    /// monitor's KVM): Windows then releases the held modifiers first. Other shortcuts (brightness,
+    /// picture) leave them alone, so the key can be tapped again while they're held.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub moves_keyboard: bool,
 }
 
 pub const ICON_PNG: &[u8] = include_bytes!("../../assets/icon-256.png");

@@ -93,6 +93,36 @@ pub fn color_preset_name(value: u16) -> Option<&'static str> {
     })
 }
 
+pub const BRIGHTNESS_VCP: u8 = 0x10;
+pub const BRIGHTNESS_MAX: u16 = 100;
+pub const BRIGHTNESS_UP_HOTKEY: &str = "Ctrl+Alt+Shift+Up";
+pub const BRIGHTNESS_DOWN_HOTKEY: &str = "Ctrl+Alt+Shift+Down";
+
+/// The brightness a `brightness` argument asks for: "up"/"down" move by `step`, "+5"/"-5" by that
+/// much, "60" sets it; the result stays within 0-100.
+pub fn brightness_target(arg: &str, current: u32, step: u16) -> Result<u16, String> {
+    let arg = arg.trim().to_lowercase();
+    let current = i64::from(current.min(u32::from(BRIGHTNESS_MAX)));
+    let invalid = || {
+        format!("{arg:?} is not a brightness: use up, down, a number (0-100), or +N / -N")
+    };
+    let target = match arg.as_str() {
+        "up" => current + i64::from(step),
+        "down" => current - i64::from(step),
+        _ if arg.starts_with('+') || arg.starts_with('-') => {
+            current + arg.parse::<i64>().map_err(|_| invalid())?
+        }
+        _ => {
+            let v: i64 = arg.parse().map_err(|_| invalid())?;
+            if !(0..=i64::from(BRIGHTNESS_MAX)).contains(&v) {
+                return Err(format!("Brightness {v} is out of range (0 to {BRIGHTNESS_MAX})"));
+            }
+            v
+        }
+    };
+    Ok(target.clamp(0, i64::from(BRIGHTNESS_MAX)) as u16)
+}
+
 /// A named set of monitor settings applied together ("Day", "Evening"...). Only the settings it
 /// lists are changed.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -162,6 +192,10 @@ pub struct AppConfig {
     pub toggle_hotkey: Option<String>,
     /// Picture profiles, shown in the tray's Picture menu.
     pub profiles: Vec<PictureProfile>,
+    pub brightness_up_hotkey: Option<String>,
+    pub brightness_down_hotkey: Option<String>,
+    /// How much a brightness shortcut changes the brightness (out of 100).
+    pub brightness_step: u16,
     /// A notification after each switch.
     pub show_notifications: bool,
     /// A notification when the app starts, so it's clear it is running in the tray.
@@ -178,6 +212,9 @@ impl Default for AppConfig {
             inputs: Vec::new(),
             toggle_hotkey: Some(crate::autoconfig::TOGGLE_HOTKEY.into()),
             profiles: Vec::new(),
+            brightness_up_hotkey: Some(BRIGHTNESS_UP_HOTKEY.into()),
+            brightness_down_hotkey: Some(BRIGHTNESS_DOWN_HOTKEY.into()),
+            brightness_step: 10,
             show_notifications: true,
             show_startup_notification: true,
         }
@@ -295,6 +332,8 @@ impl AppConfig {
         };
         config.inputs.iter_mut().for_each(|e| blank(&mut e.hotkey));
         config.profiles.iter_mut().for_each(|p| blank(&mut p.hotkey));
+        blank(&mut config.brightness_up_hotkey);
+        blank(&mut config.brightness_down_hotkey);
         blank(&mut config.toggle_hotkey);
         config.check()?;
         Ok(config)
@@ -321,6 +360,14 @@ impl AppConfig {
             shortcuts.push((name.to_string(), &e.hotkey));
         }
         shortcuts.push(("Next input".into(), &self.toggle_hotkey));
+        shortcuts.push(("Brightness up".into(), &self.brightness_up_hotkey));
+        shortcuts.push(("Brightness down".into(), &self.brightness_down_hotkey));
+        if !(1..=50).contains(&self.brightness_step) {
+            return Err(format!(
+                "Brightness step {} is out of range (1 to 50).",
+                self.brightness_step
+            ));
+        }
         let mut names: Vec<String> = Vec::new();
         for (i, p) in self.profiles.iter().enumerate() {
             let name = p.name.trim();
@@ -517,5 +564,39 @@ mod tests {
         let old = r#"{"Inputs":[{"Name":"HDMI-1","Value":17}]}"#;
         assert!(AppConfig::from_export(old).unwrap().profiles.is_empty());
         assert_eq!(find_profile(&cfg.profiles, " evening ").unwrap().name, "Evening");
+    }
+
+    #[test]
+    fn brightness_targets() {
+        assert_eq!(brightness_target("up", 44, 10), Ok(54));
+        assert_eq!(brightness_target("DOWN", 44, 10), Ok(34));
+        assert_eq!(brightness_target("up", 95, 10), Ok(100));
+        assert_eq!(brightness_target("down", 4, 10), Ok(0));
+        assert_eq!(brightness_target("+5", 44, 10), Ok(49));
+        assert_eq!(brightness_target("-50", 44, 10), Ok(0));
+        assert_eq!(brightness_target(" 60 ", 44, 10), Ok(60));
+        assert!(brightness_target("120", 44, 10).is_err());
+        assert!(brightness_target("brighter", 44, 10).is_err());
+        // A monitor reporting more than 100 is treated as 100.
+        assert_eq!(brightness_target("down", 255, 10), Ok(90));
+    }
+
+    #[test]
+    fn brightness_settings_are_checked() {
+        let mut cfg = AppConfig {
+            inputs: inputs(),
+            ..Default::default()
+        };
+        assert!(cfg.check().is_ok());
+        cfg.brightness_step = 0;
+        assert!(cfg.check().unwrap_err().contains("step"));
+        cfg.brightness_step = 10;
+        cfg.brightness_down_hotkey = cfg.brightness_up_hotkey.clone();
+        assert!(cfg.check().unwrap_err().contains("more than once"));
+        // Configs from 1.2.0 have no brightness fields: they get the default shortcuts.
+        let old = r#"{"Inputs":[{"Name":"HDMI-1","Value":17}]}"#;
+        let loaded = AppConfig::from_export(old).unwrap();
+        assert_eq!(loaded.brightness_up_hotkey.as_deref(), Some(BRIGHTNESS_UP_HOTKEY));
+        assert_eq!(loaded.brightness_step, 10);
     }
 }

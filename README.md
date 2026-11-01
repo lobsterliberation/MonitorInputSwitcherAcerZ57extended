@@ -69,6 +69,9 @@ window (egui) and the command line are shared; only the platform layer differs:
   shortcut, or `picture <NAME>`. Set the picture up with the monitor's own menu, then click **New
   profile from monitor** in Settings to save it; click a profile's settings to edit or untick
   individual values (only ticked values are changed). See [Picture profiles](#picture-profiles).
+- **Brightness shortcuts:** `Ctrl+Alt+Shift+Up` / `Down` by default, changeable in Settings with the
+  step (10 out of 100 by default). Each press reads the monitor's brightness first, so it stays right
+  after using the monitor's own buttons. Also `brightness up`, `brightness 60`, `brightness -5`...
 - **"Next input"** only cycles through inputs ticked **In Next** (`IncludeInNext`, on by default), so
   you can skip the ports with nothing plugged in. Sadly, a monitor can't be asked which inputs
   actually have a signal: DDC/CI has no standard command for it.
@@ -173,6 +176,7 @@ monitor-input-switcher switch 0x11      # any input code, configured or not
 monitor-input-switcher next
 monitor-input-switcher picture Evening   # apply a picture profile (name is case-insensitive)
 monitor-input-switcher picture           # list the picture profiles
+monitor-input-switcher brightness        # print the brightness; or: brightness up / down / 60 / +5 / -5
 monitor-input-switcher get              # e.g. "6927 (0x1B0F) = DisplayPort"
 monitor-input-switcher list             # e.g. "AW3926QW  (/dev/i2c-20, card2-DP-8)"
 monitor-input-switcher capabilities     # model and input codes the monitor reports, plus the raw string
@@ -184,8 +188,8 @@ monitor-input-switcher quit
 
 On Windows it's `monitor-input-switcher.exe`, from PowerShell or cmd. The commands go to the running
 app (over `$XDG_RUNTIME_DIR/monitor-input-switcher.sock` on Linux, a named pipe on Windows), so DDC
-operations never overlap. If the app isn't running, `switch`, `next`, `picture`, `get` and `list` talk to
-the monitor directly. `export` and `import` work either way; `import` has a running app reload the new
+operations never overlap. If the app isn't running, `switch`, `next`, `picture`, `brightness`, `get` and
+`list` talk to the monitor directly. `export` and `import` work either way; `import` has a running app reload the new
 settings.
 
 ## Config
@@ -206,6 +210,9 @@ Both systems use the same JSON format:
     { "Name": "Day", "Hotkey": "Ctrl+Alt+Shift+D", "Values": { "Brightness": 80, "Contrast": 50, "ColorPreset": 5 } },
     { "Name": "Evening", "Hotkey": null, "Values": { "Brightness": 30, "ColorPreset": 5, "BlueGain": 40 } }
   ],
+  "BrightnessUpHotkey": "Ctrl+Alt+Shift+Up",
+  "BrightnessDownHotkey": "Ctrl+Alt+Shift+Down",
+  "BrightnessStep": 10,
   "ShowNotifications": true,
   "ShowStartupNotification": true
 }
@@ -287,8 +294,8 @@ These come from my monitor; yours may behave differently, and the app tries not 
   Windows, a notification lists the shortcuts that couldn't be registered. Shortcuts are released
   while Settings is open, so it can record them.
 - **Stuck modifier keys**: with the keyboard on the monitor's USB hub, switching unplugs it while
-  Ctrl/Alt/Shift are still held. On Windows those keys stayed pressed, so on a shortcut press the
-  app sends key-up events for any held modifier (`SendInput`), waits 30 ms, then switches. On Linux
+  Ctrl/Alt/Shift are still held. On Windows those keys stayed pressed, so on an input-switching
+  shortcut (not brightness or picture shortcuts, which can be tapped repeatedly) the app sends key-up events for any held modifier (`SendInput`), waits 30 ms, then switches. On Linux
   the kernel removes the keyboard's input device and libinput/KWin release every key held on it, so
   the app switches immediately. If modifiers ever do stick, please report it.
 - **See the logs** (Linux): run it from a terminal with

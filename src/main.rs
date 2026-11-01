@@ -28,6 +28,7 @@ Commands:
   switch <INPUT>   switch to an input, by name or input code (e.g. \"USB-C\", HDMI-1, 27, 0x11)
   next             switch to the next configured input
   picture [NAME]   apply a picture profile (brightness, contrast...); without a name, list them
+  brightness [B]   print the brightness, or set it: up, down, a number (0-100), +N or -N
   get              print the current input
   list             list detected displays
   capabilities     show the monitor's model and the input codes it accepts
@@ -85,6 +86,15 @@ fn run_locally(cmd: &str, arg: &str) -> Result<String, String> {
             monitor.set_input(value)?;
             Ok(format!("Switched to {name}"))
         }
+        "brightness" => {
+            let current = monitor.get_vcp(config::BRIGHTNESS_VCP)?;
+            if arg.trim().is_empty() {
+                return Ok(format!("Brightness {current}"));
+            }
+            let target = config::brightness_target(arg, current, config.brightness_step)?;
+            monitor.set_vcp(config::BRIGHTNESS_VCP, target)?;
+            Ok(format!("Brightness {target}"))
+        }
         "picture" if arg.trim().is_empty() => Ok(ipc::profiles_text(&config.profiles)),
         "picture" => {
             let profile = config::find_profile(&config.profiles, arg).ok_or_else(|| {
@@ -139,7 +149,7 @@ fn main() {
                 1
             }
         },
-        "switch" | "next" | "picture" | "get" | "list" | "capabilities" | "caps" | "settings"
+        "switch" | "next" | "picture" | "brightness" | "get" | "list" | "capabilities" | "caps" | "settings"
         | "quit" => {
             let cmd = if cmd == "capabilities" { "caps" } else { cmd };
             let req = Request {

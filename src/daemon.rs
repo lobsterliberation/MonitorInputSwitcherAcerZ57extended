@@ -2,7 +2,10 @@
 //! operations never overlap and never block the menu.
 
 use crate::autoconfig;
-use crate::config::{APP_NAME, AppConfig, InputEntry, Loaded, PictureProfile, autostart};
+use crate::config::{
+    APP_NAME, AppConfig, BRIGHTNESS_VCP, InputEntry, Loaded, PictureProfile, autostart,
+    brightness_target,
+};
 use crate::ddc::{self, Monitor};
 use crate::hotkey::Hotkey;
 use crate::ipc::{self, Request, Response};
@@ -12,6 +15,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 const TOGGLE_ACTION: &str = "next-input";
+const BRIGHTNESS_UP_ACTION: &str = "brightness-up";
+const BRIGHTNESS_DOWN_ACTION: &str = "brightness-down";
 
 type Reply = Sender<Response>;
 
@@ -24,6 +29,11 @@ enum Ev {
     SwitchDone {
         entry: Option<InputEntry>,
         result: Result<InputEntry, String>,
+        reply: Option<Reply>,
+        from_hotkey: bool,
+    },
+    BrightnessDone {
+        result: Result<u16, String>,
         reply: Option<Reply>,
         from_hotkey: bool,
     },
@@ -249,6 +259,11 @@ impl App {
                     reply,
                     from_hotkey,
                 } => self.switch_done(entry, result, reply, from_hotkey),
+                Ev::BrightnessDone {
+                    result,
+                    reply,
+                    from_hotkey,
+                } => self.brightness_done(result, reply, from_hotkey),
                 Ev::ProfileDone {
                     profile,
                     result,
@@ -389,6 +404,60 @@ impl App {
         }
     }
 
+    // --- brightness ------------------------------------------------------------------------------
+
+    /// Reads the brightness and sets it from `arg` ("up", "down", "+5", "60"). Reading first keeps
+    /// it right when the brightness was changed with the monitor's own buttons.
+    fn adjust_brightness(&self, arg: String, reply: Option<Reply>, from_hotkey: bool) {
+        let step = self.config.brightness_step;
+        let tx = self.tx.clone();
+        self.run_ddc(move |m| {
+            let result = m.current.get_vcp(BRIGHTNESS_VCP).and_then(|current| {
+                let target = brightness_target(&arg, current, step)?;
+                if u32::from(target) != current {
+                    m.current.set_vcp(BRIGHTNESS_VCP, target)?;
+                }
+                Ok(target)
+            });
+            let _ = tx.send(Ev::BrightnessDone {
+                result,
+                reply,
+                from_hotkey,
+            });
+        });
+    }
+
+    fn brightness_done(
+        &mut self,
+        result: Result<u16, String>,
+        reply: Option<Reply>,
+        from_hotkey: bool,
+    ) {
+        if from_hotkey {
+            self.hotkey_busy = false;
+        }
+        match result {
+            Ok(v) => {
+                let msg = format!("Brightness {v}");
+                if self.config.show_notifications {
+                    self.ui.notify("Brightness", &msg, false, 1000);
+                }
+                if let Some(r) = reply {
+                    let _ = r.send(Response {
+                        value: Some(u32::from(v)),
+                        ..Response::ok(msg)
+                    });
+                }
+            }
+            Err(e) => {
+                self.notify_error("Could not change the brightness", &e);
+                if let Some(r) = reply {
+                    let _ = r.send(Response::err(e));
+                }
+            }
+        }
+    }
+
     // --- picture profiles ------------------------------------------------------------------------
 
     fn apply_profile(&self, index: usize, reply: Option<Reply>, from_hotkey: bool) {
@@ -462,6 +531,16 @@ impl App {
                 self.config.toggle_hotkey.clone(),
             ));
         }
+        out.push((
+            BRIGHTNESS_UP_ACTION.into(),
+            "Brightness up".into(),
+            self.config.brightness_up_hotkey.clone(),
+        ));
+        out.push((
+            BRIGHTNESS_DOWN_ACTION.into(),
+            "Brightness down".into(),
+            self.config.brightness_down_hotkey.clone(),
+        ));
         out.extend(self.config.profiles.iter().enumerate().map(|(i, p)| {
             (
                 profile_action_id(i),
@@ -477,6 +556,7 @@ impl App {
             .hotkey_actions()
             .into_iter()
             .map(|(id, friendly, h)| ShortcutAction {
+                moves_keyboard: id == TOGGLE_ACTION || id.starts_with("switch-input-"),
                 id,
                 friendly,
                 hotkey: Hotkey::parse_opt(&h),
@@ -519,6 +599,10 @@ impl App {
         if action == TOGGLE_ACTION {
             self.hotkey_busy = true;
             self.next_input(None, true);
+        } else if action == BRIGHTNESS_UP_ACTION || action == BRIGHTNESS_DOWN_ACTION {
+            self.hotkey_busy = true;
+            let arg = if action == BRIGHTNESS_UP_ACTION { "up" } else { "down" };
+            self.adjust_brightness(arg.into(), None, true);
         } else if let Some(i) =
             (0..self.config.inputs.len()).find(|i| input_action_id(*i) == action)
         {
@@ -547,6 +631,10 @@ impl App {
         let new = hotkey.map(|h| h.to_string());
         if action == TOGGLE_ACTION {
             self.config.toggle_hotkey = new;
+        } else if action == BRIGHTNESS_UP_ACTION {
+            self.config.brightness_up_hotkey = new;
+        } else if action == BRIGHTNESS_DOWN_ACTION {
+            self.config.brightness_down_hotkey = new;
         } else if let Some(e) = (0..self.config.inputs.len())
             .find(|i| input_action_id(*i) == action)
             .map(|i| &mut self.config.inputs[i])
@@ -717,6 +805,18 @@ impl App {
                         ipc::profiles_text(&self.config.profiles)
                     ))),
                 },
+            },
+            "brightness" => match req.arg.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
+                Some(arg) => self.adjust_brightness(arg.to_string(), Some(reply), false),
+                None => self.run_ddc(move |m| {
+                    let _ = reply.send(match m.current.get_vcp(BRIGHTNESS_VCP) {
+                        Ok(v) => Response {
+                            value: Some(v),
+                            ..Response::ok(format!("Brightness {v}"))
+                        },
+                        Err(e) => Response::err(e),
+                    });
+                }),
             },
             "getvcp" => {
                 let (target, vcp) = (req.monitor, req.vcp.unwrap_or(0));

@@ -76,6 +76,8 @@ enum Capture {
     Row(usize),
     Toggle,
     Profile(usize),
+    BrightnessUp,
+    BrightnessDown,
 }
 
 enum Msg {
@@ -136,6 +138,9 @@ struct SettingsApp {
     reading_new: bool,
     profiles_text: String,
     toggle: Option<Hotkey>,
+    brightness_up: Option<Hotkey>,
+    brightness_down: Option<Hotkey>,
+    brightness_step: u16,
     autostart: bool,
     notifications: bool,
     startup_notification: bool,
@@ -284,6 +289,9 @@ impl SettingsApp {
             reading_new: false,
             profiles_text: String::new(),
             toggle: Hotkey::parse_opt(&config.toggle_hotkey),
+            brightness_up: Hotkey::parse_opt(&config.brightness_up_hotkey),
+            brightness_down: Hotkey::parse_opt(&config.brightness_down_hotkey),
+            brightness_step: config.brightness_step,
             autostart: autostart::is_enabled(),
             notifications: config.show_notifications,
             startup_notification: config.show_startup_notification,
@@ -317,6 +325,9 @@ impl SettingsApp {
         self.reading_new = false;
         self.profiles_text.clear();
         self.toggle = Hotkey::parse_opt(&config.toggle_hotkey);
+        self.brightness_up = Hotkey::parse_opt(&config.brightness_up_hotkey);
+        self.brightness_down = Hotkey::parse_opt(&config.brightness_down_hotkey);
+        self.brightness_step = config.brightness_step;
         self.notifications = config.show_notifications;
         self.startup_notification = config.show_startup_notification;
         self.config = config;
@@ -453,6 +464,8 @@ impl SettingsApp {
                     Some(p) => &mut p.hotkey,
                     None => return self.set_capture(None),
                 },
+                Capture::BrightnessUp => &mut self.brightness_up,
+                Capture::BrightnessDown => &mut self.brightness_down,
             };
             match key {
                 egui::Key::Escape if plain => {}
@@ -495,6 +508,8 @@ impl SettingsApp {
             Capture::Row(i) => &self.rows[i].hotkey,
             Capture::Toggle => &self.toggle,
             Capture::Profile(i) => &self.profiles[i].hotkey,
+            Capture::BrightnessUp => &self.brightness_up,
+            Capture::BrightnessDown => &self.brightness_down,
         };
         let text = if recording {
             "Press keys... (Esc cancels)".to_string()
@@ -537,6 +552,8 @@ impl SettingsApp {
                 .filter_map(|r| r.hotkey.clone())
                 .chain(self.toggle.clone())
                 .chain(self.profiles.iter().filter_map(|p| p.hotkey.clone()))
+                .chain(self.brightness_up.clone())
+                .chain(self.brightness_down.clone())
                 .collect();
             let hotkey = (0..9)
                 .filter_map(|i| {
@@ -586,6 +603,9 @@ impl SettingsApp {
             .collect();
         cfg.toggle_hotkey = self.toggle.as_ref().map(Hotkey::to_string);
         cfg.profiles = self.profiles.iter().map(ProfileRow::profile).collect();
+        cfg.brightness_up_hotkey = self.brightness_up.as_ref().map(Hotkey::to_string);
+        cfg.brightness_down_hotkey = self.brightness_down.as_ref().map(Hotkey::to_string);
+        cfg.brightness_step = self.brightness_step;
         cfg.show_notifications = self.notifications;
         cfg.show_startup_notification = self.startup_notification;
         cfg.check()?;
@@ -1036,12 +1056,26 @@ impl eframe::App for SettingsApp {
                 ui.group(|ui| {
                     ui.set_width(ui.available_width());
                     ui.strong("Options");
-                    ui.horizontal(|ui| {
+                    egui::Grid::new("option-shortcuts").num_columns(3).spacing([8.0, 6.0]).show(ui, |ui| {
                         ui.label("Next-input shortcut (cycles through the list):");
                         self.hotkey_button(ui, Capture::Toggle);
+                        ui.label("");
+                        ui.end_row();
+                        ui.label("Brightness up:");
+                        self.hotkey_button(ui, Capture::BrightnessUp);
+                        ui.horizontal(|ui| {
+                            ui.label("step");
+                            ui.add(egui::DragValue::new(&mut self.brightness_step).range(1..=50))
+                                .on_hover_text("How much each press changes the brightness (out of 100)");
+                        });
+                        ui.end_row();
+                        ui.label("Brightness down:");
+                        self.hotkey_button(ui, Capture::BrightnessDown);
+                        ui.label("");
+                        ui.end_row();
                     });
                     ui.checkbox(&mut self.autostart, platform::START_WITH_LOGIN);
-                    ui.checkbox(&mut self.notifications, "Show a notification after switching");
+                    ui.checkbox(&mut self.notifications, "Show a notification after each change (input, picture, brightness)");
                     ui.checkbox(
                         &mut self.startup_notification,
                         "Show a notification when the app starts",
