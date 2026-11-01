@@ -27,7 +27,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
     DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW,
     GetSystemMetrics, HICON, HMENU, IDI_APPLICATION, LR_DEFAULTCOLOR, LoadIconW, MF_CHECKED,
-    MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassW,
+    MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassW,
     RegisterWindowMessageW, SM_CXSMICON, SetForegroundWindow, SetMenuDefaultItem, TPM_NONOTIFY,
     TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WM_APP,
     WM_CLOSE, WM_DESTROY, WM_HOTKEY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPED,
@@ -43,6 +43,7 @@ const ID_SETTINGS: u32 = 11;
 const ID_STARTUP: u32 = 12;
 const ID_EXIT: u32 = 13;
 const ID_INPUT_BASE: u32 = 100;
+const ID_PROFILE_BASE: u32 = 300;
 
 /// Modifier virtual keys whose key-up we inject (L/R Shift, Ctrl, Alt, Win).
 const MODIFIER_VKS: [u16; 8] = [0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C];
@@ -192,6 +193,26 @@ impl State {
                     &with_shortcut("Next input", &m.toggle),
                 );
             }
+            if !m.profiles.is_empty()
+                && let Ok(picture) = CreatePopupMenu()
+            {
+                for (i, (name, hk, checked)) in m.profiles.iter().enumerate() {
+                    let flags = if *checked {
+                        MF_STRING | MF_CHECKED
+                    } else {
+                        MF_STRING
+                    };
+                    let _ = AppendMenuW(
+                        picture,
+                        flags,
+                        (ID_PROFILE_BASE as usize) + i,
+                        &with_shortcut(name, hk),
+                    );
+                }
+                let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+                // DestroyMenu on the main menu also destroys this submenu.
+                let _ = AppendMenuW(menu, MF_POPUP, picture.0 as usize, w!("Picture"));
+            }
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
             let _ = AppendMenuW(menu, MF_STRING, ID_SETTINGS as usize, w!("Settings..."));
             let _ = SetMenuDefaultItem(menu, ID_SETTINGS, 0);
@@ -222,6 +243,11 @@ impl State {
                 self.send(UiEvent::SetAutostart(self.model.autostart));
             }
             ID_EXIT => self.send(UiEvent::Quit),
+            c if c >= ID_PROFILE_BASE
+                && ((c - ID_PROFILE_BASE) as usize) < self.model.profiles.len() =>
+            {
+                self.send(UiEvent::Profile((c - ID_PROFILE_BASE) as usize))
+            }
             c if c >= ID_INPUT_BASE && ((c - ID_INPUT_BASE) as usize) < self.model.inputs.len() => {
                 self.send(UiEvent::Switch((c - ID_INPUT_BASE) as usize))
             }

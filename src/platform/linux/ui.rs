@@ -8,7 +8,7 @@ use crate::config::{APP_ID, APP_NAME};
 use crate::hotkey::Hotkey;
 use crate::platform::{ICON_PNG, START_WITH_LOGIN, ShortcutAction, TrayModel, UiEvent};
 use ksni::blocking::TrayMethods;
-use ksni::menu::{CheckmarkItem, MenuItem, StandardItem};
+use ksni::menu::{CheckmarkItem, MenuItem, StandardItem, SubMenu};
 use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 use zbus::zvariant::Value;
@@ -81,6 +81,33 @@ impl ksni::Tray for Tray {
                     label: "Next input".into(),
                     shortcut: shortcut(&m.toggle),
                     activate: Box::new(|t: &mut Self| t.send(UiEvent::Next)),
+                    ..Default::default()
+                }
+                .into(),
+            );
+        }
+        if !m.profiles.is_empty() {
+            let submenu = m
+                .profiles
+                .iter()
+                .enumerate()
+                .map(|(i, (name, hk, checked))| {
+                    CheckmarkItem {
+                        label: name.replace('_', "__"),
+                        checked: *checked,
+                        shortcut: shortcut(hk),
+                        activate: Box::new(move |t: &mut Self| t.send(UiEvent::Profile(i))),
+                        ..Default::default()
+                    }
+                    .into()
+                })
+                .collect();
+            items.push(MenuItem::Separator);
+            items.push(
+                SubMenu {
+                    label: "Picture".into(),
+                    icon_name: "preferences-desktop-display".into(),
+                    submenu,
                     ..Default::default()
                 }
                 .into(),

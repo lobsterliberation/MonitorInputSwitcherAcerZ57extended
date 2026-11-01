@@ -27,6 +27,7 @@ Without a command, starts the tray app (only one instance runs).
 Commands:
   switch <INPUT>   switch to an input, by name or input code (e.g. \"USB-C\", HDMI-1, 27, 0x11)
   next             switch to the next configured input
+  picture [NAME]   apply a picture profile (brightness, contrast...); without a name, list them
   get              print the current input
   list             list detected displays
   capabilities     show the monitor's model and the input codes it accepts
@@ -84,6 +85,17 @@ fn run_locally(cmd: &str, arg: &str) -> Result<String, String> {
             monitor.set_input(value)?;
             Ok(format!("Switched to {name}"))
         }
+        "picture" if arg.trim().is_empty() => Ok(ipc::profiles_text(&config.profiles)),
+        "picture" => {
+            let profile = config::find_profile(&config.profiles, arg).ok_or_else(|| {
+                format!(
+                    "No picture profile named {arg:?}. Profiles:\n{}",
+                    ipc::profiles_text(&config.profiles)
+                )
+            })?;
+            monitor.apply(&profile.writes())?;
+            Ok(format!("Picture: {}", profile.name))
+        }
         "next" => {
             let current = monitor.get_input().ok();
             let target = config::next_input(&config.inputs, current)?;
@@ -127,7 +139,8 @@ fn main() {
                 1
             }
         },
-        "switch" | "next" | "get" | "list" | "capabilities" | "caps" | "settings" | "quit" => {
+        "switch" | "next" | "picture" | "get" | "list" | "capabilities" | "caps" | "settings"
+        | "quit" => {
             let cmd = if cmd == "capabilities" { "caps" } else { cmd };
             let req = Request {
                 cmd: cmd.into(),

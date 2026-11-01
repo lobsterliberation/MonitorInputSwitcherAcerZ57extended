@@ -1,7 +1,7 @@
 //! The protocol between the CLI / Settings window and the running app: one JSON line each way
 //! over the platform's local transport (Unix socket on Linux, named pipe on Windows).
 
-use crate::config::{AppConfig, InputEntry};
+use crate::config::{AppConfig, InputEntry, PictureProfile};
 use crate::ddc::DisplayInfo;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -16,6 +16,9 @@ pub struct Request {
     pub value: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub monitor: Option<(Option<String>, Option<String>)>,
+    /// For "getvcp"/"setvcp": the VCP feature code (0x10 brightness...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vcp: Option<u8>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -116,6 +119,18 @@ pub fn inputs_text(config: &AppConfig) -> String {
         .map(|e| format!("{} ({})", e.name, e.value))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// "Day (Brightness 80, ...)\nEvening (...)", for `picture` without a name.
+pub fn profiles_text(profiles: &[PictureProfile]) -> String {
+    if profiles.is_empty() {
+        return "No picture profiles yet: create them in Settings".into();
+    }
+    profiles
+        .iter()
+        .map(|p| format!("{}: {}", p.name, p.summary()))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub fn describe_input(config: &AppConfig, value: u32) -> String {

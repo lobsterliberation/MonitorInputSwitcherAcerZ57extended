@@ -64,6 +64,11 @@ window (egui) and the command line are shared; only the platform layer differs:
   "Switch now" button to test), "Detect inputs", the next-input shortcut, start at login, and the
   startup and switch notifications. **Export...** saves the settings to a file and **Import...**
   loads one into the window (applied on Save), to set up another computer the same way.
+- **Picture profiles:** named sets of picture settings (brightness, contrast, colour temperature, red/
+  green/blue gain, and optionally volume) applied together from the tray's **Picture** menu, a
+  shortcut, or `picture <NAME>`. Set the picture up with the monitor's own menu, then click **New
+  profile from monitor** in Settings to save it; click a profile's settings to edit or untick
+  individual values (only ticked values are changed). See [Picture profiles](#picture-profiles).
 - **"Next input"** only cycles through inputs ticked **In Next** (`IncludeInNext`, on by default), so
   you can skip the ports with nothing plugged in. Sadly, a monitor can't be asked which inputs
   actually have a signal: DDC/CI has no standard command for it.
@@ -166,6 +171,8 @@ monitor-input-switcher                  # start the tray app (if it's already ru
 monitor-input-switcher switch USB-C     # by name (case-insensitive) or by value: switch 27
 monitor-input-switcher switch 0x11      # any input code, configured or not
 monitor-input-switcher next
+monitor-input-switcher picture Evening   # apply a picture profile (name is case-insensitive)
+monitor-input-switcher picture           # list the picture profiles
 monitor-input-switcher get              # e.g. "6927 (0x1B0F) = DisplayPort"
 monitor-input-switcher list             # e.g. "AW3926QW  (/dev/i2c-20, card2-DP-8)"
 monitor-input-switcher capabilities     # model and input codes the monitor reports, plus the raw string
@@ -177,8 +184,8 @@ monitor-input-switcher quit
 
 On Windows it's `monitor-input-switcher.exe`, from PowerShell or cmd. The commands go to the running
 app (over `$XDG_RUNTIME_DIR/monitor-input-switcher.sock` on Linux, a named pipe on Windows), so DDC
-operations never overlap. If the app isn't running, `switch`, `next`, `get` and `list` talk to the
-monitor directly. `export` and `import` work either way; `import` has a running app reload the new
+operations never overlap. If the app isn't running, `switch`, `next`, `picture`, `get` and `list` talk to
+the monitor directly. `export` and `import` work either way; `import` has a running app reload the new
 settings.
 
 ## Config
@@ -195,6 +202,10 @@ Both systems use the same JSON format:
     { "Name": "USB-C", "Value": 27, "Hotkey": "Ctrl+Alt+Shift+3", "IncludeInNext": true }
   ],
   "ToggleHotkey": "Ctrl+Alt+Shift+S",
+  "Profiles": [
+    { "Name": "Day", "Hotkey": "Ctrl+Alt+Shift+D", "Values": { "Brightness": 80, "Contrast": 50, "ColorPreset": 5 } },
+    { "Name": "Evening", "Hotkey": null, "Values": { "Brightness": 30, "ColorPreset": 5, "BlueGain": 40 } }
+  ],
   "ShowNotifications": true,
   "ShowStartupNotification": true
 }
@@ -207,8 +218,26 @@ The standard codes are `0x0F`/`0x10` DisplayPort-1/2, `0x11`/`0x12` HDMI-1/2, `0
 and `0x01`/`0x02` VGA-1/2; `0x1B` is commonly USB-C. The Windows key is written `Win` on Windows and
 `Meta` on Linux; both are accepted.
 
+`Profiles` is optional (older configs have none). Each profile's `Values` may hold `Brightness`
+(VCP `0x10`), `Contrast` (`0x12`), `ColorPreset` (`0x14`: 5 = 6500K, 6 = 7500K, 8 = 9300K, 11 = User 1
+in MCCS), `RedGain`, `GreenGain`, `BlueGain` (`0x16`/`0x18`/`0x1A`) and `Volume` (`0x62`), 0-100 except
+`ColorPreset`. They're applied in that order, colour preset first, since changing it can reset the
+gains.
+
 An exported settings file is this same JSON, so it can be imported on either system. "Start with
 login" isn't in it: that stays a per-computer choice.
+
+## Picture profiles
+
+Profiles change the standard DDC/CI picture settings, so they work on any monitor that accepts
+them. They can't pick the monitor's own picture modes (ECO, HDR, Movie...): MCCS has a "display
+mode" feature (`0xDC`) but monitors rarely implement it, and Acer's Predator Z57 doesn't list it. On
+the Z57, writing a picture setting switches the monitor to its **User** mode; its true HDR mode (local
+dimming, tone mapping) is processing inside the monitor that only its own menu turns on.
+
+A monitor can't report which profile is active, so the tick in the Picture menu shows the profile
+the app applied last. "Read" in Settings replaces a profile's values with what the monitor is set to
+now; volume is never read in (tick it by hand if a profile should set it).
 
 ## Under the hood
 

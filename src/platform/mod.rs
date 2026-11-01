@@ -27,6 +27,8 @@ pub struct TrayModel {
     /// (name, shortcut, checked = current input)
     pub inputs: Vec<(String, Option<Hotkey>, bool)>,
     pub toggle: Option<Hotkey>,
+    /// (name, shortcut, checked = the profile the app applied last)
+    pub profiles: Vec<(String, Option<Hotkey>, bool)>,
     pub autostart: bool,
 }
 
@@ -35,6 +37,8 @@ pub struct TrayModel {
 pub enum UiEvent {
     Switch(usize),
     Next,
+    /// Apply a picture profile (index into the config's profiles).
+    Profile(usize),
     MenuOpened,
     SetAutostart(bool),
     OpenSettings,

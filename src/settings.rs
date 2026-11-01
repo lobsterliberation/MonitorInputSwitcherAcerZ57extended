@@ -3,12 +3,16 @@
 //! It edits config.json, then asks the running app to reload. DDC operations (detect, read,
 //! "Switch now") go through the running app so they stay serialized with everything else.
 
-use crate::config::{APP_NAME, AppConfig, InputEntry, autostart};
+use crate::config::{
+    APP_NAME, AppConfig, InputEntry, PICTURE_CONTROLS, PictureProfile, autostart,
+    color_preset_name,
+};
 use crate::ddc::{self, DisplayInfo};
 use crate::hotkey::{DIGIT_ROW, Hotkey};
 use crate::ipc::{self, Request};
 use crate::platform::{self, ICON_PNG};
 use eframe::egui;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 
@@ -38,10 +42,40 @@ struct Row {
     testing: bool,
 }
 
+struct ProfileRow {
+    name: String,
+    hotkey: Option<Hotkey>,
+    values: BTreeMap<String, u16>,
+    /// Reading from or writing to the monitor.
+    busy: bool,
+}
+
+impl ProfileRow {
+    fn profile(&self) -> PictureProfile {
+        PictureProfile {
+            name: self.name.trim().into(),
+            hotkey: self.hotkey.as_ref().map(Hotkey::to_string),
+            values: self.values.clone(),
+        }
+    }
+}
+
+/// Settings "Read from monitor" captures. Volume is left out: a picture profile changing the
+/// volume would be a surprise. It can still be ticked by hand.
+const READ_KEYS: &[&str] = &[
+    "ColorPreset",
+    "RedGain",
+    "GreenGain",
+    "BlueGain",
+    "Contrast",
+    "Brightness",
+];
+
 #[derive(Clone, Copy, PartialEq)]
 enum Capture {
     Row(usize),
     Toggle,
+    Profile(usize),
 }
 
 enum Msg {
@@ -52,6 +86,9 @@ enum Msg {
     /// None: the file dialog was cancelled.
     Exported(Result<Option<PathBuf>, String>),
     Imported(Result<Option<(PathBuf, AppConfig)>, String>),
+    /// Values read from the monitor for a profile row (None: a new profile).
+    ProfileRead(Option<usize>, Result<BTreeMap<String, u16>, String>),
+    ProfileApplied(usize, Result<(), String>),
 }
 
 const EXPORT_FILE_NAME: &str = "monitor-input-switcher-settings.json";
@@ -76,9 +113,28 @@ fn rows_from(config: &AppConfig) -> Vec<Row> {
         .collect()
 }
 
+fn profile_rows_from(config: &AppConfig) -> Vec<ProfileRow> {
+    config
+        .profiles
+        .iter()
+        .map(|p| ProfileRow {
+            name: p.name.clone(),
+            hotkey: Hotkey::parse_opt(&p.hotkey),
+            values: p.values.clone(),
+            busy: false,
+        })
+        .collect()
+}
+
 struct SettingsApp {
     config: AppConfig,
     rows: Vec<Row>,
+    profiles: Vec<ProfileRow>,
+    /// The profile whose values are open for editing.
+    editing: Option<usize>,
+    /// "New profile from monitor" is reading.
+    reading_new: bool,
+    profiles_text: String,
     toggle: Option<Hotkey>,
     autostart: bool,
     notifications: bool,
@@ -152,12 +208,81 @@ fn set_input(target: Target, value: u32) -> Result<(), String> {
     }
 }
 
+fn get_vcp(target: &Target, vcp: u8) -> Result<u32, String> {
+    match remote(Request {
+        cmd: "getvcp".into(),
+        monitor: Some(target.clone()),
+        vcp: Some(vcp),
+        ..Default::default()
+    }) {
+        Some(r) => r.and_then(|r| r.value.ok_or_else(|| "No value returned".into())),
+        None => ddc::Monitor::new(target.0.clone(), target.1.clone()).get_vcp(vcp),
+    }
+}
+
+fn set_vcp(target: &Target, vcp: u8, value: u16) -> Result<(), String> {
+    match remote(Request {
+        cmd: "setvcp".into(),
+        monitor: Some(target.clone()),
+        vcp: Some(vcp),
+        value: Some(u32::from(value)),
+        ..Default::default()
+    }) {
+        Some(r) => r.map(|_| ()),
+        None => ddc::Monitor::new(target.0.clone(), target.1.clone()).set_vcp(vcp, value),
+    }
+}
+
+/// The monitor's current picture settings, for the ones it answers.
+fn read_picture(target: Target) -> Result<BTreeMap<String, u16>, String> {
+    let mut values = BTreeMap::new();
+    let mut last_err = String::new();
+    for (key, code, _, max) in PICTURE_CONTROLS {
+        if !READ_KEYS.contains(key) {
+            continue;
+        }
+        match get_vcp(&target, *code) {
+            Ok(v) if v <= u32::from(*max) => {
+                values.insert(key.to_string(), v as u16);
+            }
+            Ok(_) => {}
+            Err(e) => last_err = e,
+        }
+    }
+    if values.is_empty() {
+        return Err(format!("Could not read the monitor's settings: {last_err}"));
+    }
+    Ok(values)
+}
+
+fn apply_picture(target: Target, writes: Vec<(u8, u16)>) -> Result<(), String> {
+    for (vcp, value) in writes {
+        set_vcp(&target, vcp, value)
+            .map_err(|e| format!("Setting VCP 0x{vcp:02X} to {value} failed: {e}"))?;
+    }
+    Ok(())
+}
+
+/// "Brightness 44, Contrast 50..." cut to fit a button.
+fn short_summary(text: &str) -> String {
+    const MAX: usize = 26;
+    if text.chars().count() <= MAX {
+        return text.to_string();
+    }
+    let cut: String = text.chars().take(MAX - 1).collect();
+    format!("{cut}…")
+}
+
 impl SettingsApp {
     fn new(ctx: &egui::Context) -> Self {
         let config = AppConfig::load_or_default();
         let (tx, rx) = mpsc::channel();
         let mut app = SettingsApp {
             rows: rows_from(&config),
+            profiles: profile_rows_from(&config),
+            editing: None,
+            reading_new: false,
+            profiles_text: String::new(),
             toggle: Hotkey::parse_opt(&config.toggle_hotkey),
             autostart: autostart::is_enabled(),
             notifications: config.show_notifications,
@@ -187,6 +312,10 @@ impl SettingsApp {
     fn load_form(&mut self, config: AppConfig) {
         self.set_capture(None);
         self.rows = rows_from(&config);
+        self.profiles = profile_rows_from(&config);
+        self.editing = None;
+        self.reading_new = false;
+        self.profiles_text.clear();
         self.toggle = Hotkey::parse_opt(&config.toggle_hotkey);
         self.notifications = config.show_notifications;
         self.startup_notification = config.show_startup_notification;
@@ -320,6 +449,10 @@ impl SettingsApp {
                     None => return self.set_capture(None),
                 },
                 Capture::Toggle => &mut self.toggle,
+                Capture::Profile(i) => match self.profiles.get_mut(i) {
+                    Some(p) => &mut p.hotkey,
+                    None => return self.set_capture(None),
+                },
             };
             match key {
                 egui::Key::Escape if plain => {}
@@ -361,6 +494,7 @@ impl SettingsApp {
         let value = match which {
             Capture::Row(i) => &self.rows[i].hotkey,
             Capture::Toggle => &self.toggle,
+            Capture::Profile(i) => &self.profiles[i].hotkey,
         };
         let text = if recording {
             "Press keys... (Esc cancels)".to_string()
@@ -402,6 +536,7 @@ impl SettingsApp {
                 .iter()
                 .filter_map(|r| r.hotkey.clone())
                 .chain(self.toggle.clone())
+                .chain(self.profiles.iter().filter_map(|p| p.hotkey.clone()))
                 .collect();
             let hotkey = (0..9)
                 .filter_map(|i| {
@@ -450,6 +585,7 @@ impl SettingsApp {
             })
             .collect();
         cfg.toggle_hotkey = self.toggle.as_ref().map(Hotkey::to_string);
+        cfg.profiles = self.profiles.iter().map(ProfileRow::profile).collect();
         cfg.show_notifications = self.notifications;
         cfg.show_startup_notification = self.startup_notification;
         cfg.check()?;
@@ -508,6 +644,139 @@ impl SettingsApp {
     }
 }
 
+impl SettingsApp {
+    fn profiles_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.group(|ui| {
+            ui.set_width(ui.available_width());
+            ui.strong("Picture profiles");
+            let any_busy = self.profiles.iter().any(|p| p.busy);
+            let mut remove = None;
+            if !self.profiles.is_empty() {
+                egui::Grid::new("profiles").num_columns(6).spacing([8.0, 6.0]).show(ui, |ui| {
+                    for h in ["Name", "Shortcut", "Settings", "", "", ""] {
+                        ui.strong(h);
+                    }
+                    ui.end_row();
+                    for i in 0..self.profiles.len() {
+                        ui.add_sized([120.0, 22.0], egui::TextEdit::singleline(&mut self.profiles[i].name));
+                        self.hotkey_button(ui, Capture::Profile(i));
+                        let summary = self.profiles[i].profile().summary();
+                        let open = self.editing == Some(i);
+                        if ui
+                            .add_sized([190.0, 22.0], egui::Button::new(short_summary(&summary)).selected(open))
+                            .on_hover_text(format!("{summary}\n\nClick to edit the values."))
+                            .clicked()
+                        {
+                            self.editing = if open { None } else { Some(i) };
+                        }
+                        let busy = self.profiles[i].busy;
+                        if ui
+                            .add_enabled(!busy, egui::Button::new("Apply"))
+                            .on_hover_text("Send these settings to the monitor now")
+                            .clicked()
+                        {
+                            self.profiles[i].busy = true;
+                            let (target, writes) = (self.target(), self.profiles[i].profile().writes());
+                            self.spawn(ctx, move || Msg::ProfileApplied(i, apply_picture(target, writes)));
+                        }
+                        if ui
+                            .add_enabled(!busy, egui::Button::new("Read"))
+                            .on_hover_text("Replace the values with what the monitor is set to now")
+                            .clicked()
+                        {
+                            self.profiles[i].busy = true;
+                            let target = self.target();
+                            self.spawn(ctx, move || Msg::ProfileRead(Some(i), read_picture(target)));
+                        }
+                        if ui.add_enabled(!any_busy, egui::Button::new("Remove")).clicked() {
+                            remove = Some(i);
+                        }
+                        ui.end_row();
+                    }
+                });
+            }
+            if let Some(i) = remove {
+                self.profiles.remove(i);
+                self.set_capture(None);
+                self.editing = match self.editing {
+                    Some(e) if e == i => None,
+                    Some(e) if e > i => Some(e - 1),
+                    e => e,
+                };
+            }
+            if let Some(i) = self.editing.filter(|i| *i < self.profiles.len()) {
+                ui.group(|ui| {
+                    ui.label(format!(
+                        "Settings applied by {} (only ticked ones are changed):",
+                        self.profiles[i].name.trim()
+                    ));
+                    egui::Grid::new("profile-values").num_columns(3).spacing([8.0, 4.0]).show(ui, |ui| {
+                        let values = &mut self.profiles[i].values;
+                        for (key, code, label, max) in PICTURE_CONTROLS {
+                            let mut on = values.contains_key(*key);
+                            if ui
+                                .checkbox(&mut on, *label)
+                                .on_hover_text(format!("VCP 0x{code:02X}"))
+                                .changed()
+                            {
+                                if on {
+                                    let default = if *code == 0x14 { 5 } else { 50 };
+                                    values.insert(key.to_string(), default);
+                                } else {
+                                    values.remove(*key);
+                                }
+                            }
+                            match values.get_mut(*key) {
+                                Some(v) => {
+                                    ui.add(egui::DragValue::new(v).range(0..=*max));
+                                    let note = if *code == 0x14 {
+                                        color_preset_name(*v).unwrap_or("").to_string()
+                                    } else {
+                                        String::new()
+                                    };
+                                    ui.weak(note);
+                                }
+                                None => {
+                                    ui.weak("unchanged");
+                                    ui.label("");
+                                }
+                            }
+                            ui.end_row();
+                        }
+                    });
+                });
+            }
+            ui.horizontal(|ui| {
+                let new = egui::Button::new(if self.reading_new {
+                    "Reading..."
+                } else {
+                    "New profile from monitor"
+                });
+                if ui
+                    .add_enabled(!any_busy && !self.reading_new, new)
+                    .on_hover_text(
+                        "Set the picture up with the monitor's own menu first, then click this to save it as a profile",
+                    )
+                    .clicked()
+                {
+                    self.reading_new = true;
+                    self.profiles_text.clear();
+                    let target = self.target();
+                    self.spawn(ctx, move || Msg::ProfileRead(None, read_picture(target)));
+                }
+            });
+            if !self.profiles_text.is_empty() {
+                ui.label(&self.profiles_text);
+            }
+            ui.weak(
+                "A profile sets brightness, contrast, colour temperature and colour gains together. Set the picture up \
+                 with the monitor's own menu, then click \"New profile from monitor\". The monitor's own modes (ECO, HDR...) \
+                 can't be selected this way, and applying a profile may switch the monitor to its User mode.",
+            );
+        });
+    }
+}
+
 impl eframe::App for SettingsApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -548,6 +817,54 @@ impl eframe::App for SettingsApp {
                     }
                     if let Err(e) = result {
                         self.error = Some(format!("Switch failed: {e}"));
+                    }
+                }
+                Msg::ProfileRead(index, result) => match (index, result) {
+                    (None, _) if !self.reading_new => {}
+                    (Some(i), Ok(values)) => {
+                        if let Some(p) = self.profiles.get_mut(i) {
+                            p.busy = false;
+                            p.values = values;
+                            self.profiles_text =
+                                format!("Updated {} from the monitor.", p.name.trim());
+                        }
+                    }
+                    (None, Ok(values)) => {
+                        self.reading_new = false;
+                        let n = self.profiles.len() + 1;
+                        let mut name = format!("Profile {n}");
+                        let mut k = n;
+                        while self.profiles.iter().any(|p| p.name.trim().eq_ignore_ascii_case(&name)) {
+                            k += 1;
+                            name = format!("Profile {k}");
+                        }
+                        self.profiles.push(ProfileRow {
+                            name,
+                            hotkey: None,
+                            values,
+                            busy: false,
+                        });
+                        self.profiles_text = "Added a profile with the monitor's current settings. \
+                             Click its name to rename it."
+                            .into();
+                    }
+                    (index, Err(e)) => {
+                        if index.is_none() {
+                            self.reading_new = false;
+                        }
+                        if let Some(p) = index.and_then(|i| self.profiles.get_mut(i)) {
+                            p.busy = false;
+                        }
+                        self.profiles_text.clear();
+                        self.error = Some(e);
+                    }
+                },
+                Msg::ProfileApplied(i, result) => {
+                    if let Some(p) = self.profiles.get_mut(i) {
+                        p.busy = false;
+                    }
+                    if let Err(e) = result {
+                        self.error = Some(format!("Applying the profile failed: {e}"));
                     }
                 }
                 Msg::Exported(result) => {
@@ -713,6 +1030,8 @@ impl eframe::App for SettingsApp {
                         platform::SHORTCUTS_HINT
                     ));
                 });
+
+                self.profiles_ui(ui, &ctx);
 
                 ui.group(|ui| {
                     ui.set_width(ui.available_width());

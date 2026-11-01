@@ -2,7 +2,7 @@
 //! operations never overlap and never block the menu.
 
 use crate::autoconfig;
-use crate::config::{APP_NAME, AppConfig, InputEntry, Loaded, autostart};
+use crate::config::{APP_NAME, AppConfig, InputEntry, Loaded, PictureProfile, autostart};
 use crate::ddc::{self, Monitor};
 use crate::hotkey::Hotkey;
 use crate::ipc::{self, Request, Response};
@@ -27,10 +27,20 @@ enum Ev {
         reply: Option<Reply>,
         from_hotkey: bool,
     },
+    ProfileDone {
+        profile: PictureProfile,
+        result: Result<(), String>,
+        reply: Option<Reply>,
+        from_hotkey: bool,
+    },
 }
 
 fn input_action_id(index: usize) -> String {
     format!("switch-input-{}", index + 1)
+}
+
+fn profile_action_id(index: usize) -> String {
+    format!("picture-profile-{}", index + 1)
 }
 
 // --- DDC worker ----------------------------------------------------------------------------------
@@ -89,6 +99,8 @@ struct App {
     ui: Ui,
     hotkey_busy: bool,
     settings_open: bool,
+    /// The picture profile the app applied last, by name (the monitor can't say which is active).
+    last_profile: Option<String>,
 }
 
 pub fn run() -> i32 {
@@ -145,6 +157,7 @@ pub fn run() -> i32 {
         ui,
         hotkey_busy: false,
         settings_open: false,
+        last_profile: None,
     };
     app.update_tray();
     app.register_hotkeys(true);
@@ -197,6 +210,7 @@ impl App {
             match ev {
                 Ev::Ui(UiEvent::Switch(i)) => self.switch(i, None, false),
                 Ev::Ui(UiEvent::Next) => self.next_input(None, false),
+                Ev::Ui(UiEvent::Profile(i)) => self.apply_profile(i, None, false),
                 Ev::Ui(UiEvent::Hotkey(action)) => self.on_hotkey(&action),
                 Ev::Ui(UiEvent::HotkeyChanged(action, hotkey)) => {
                     self.on_hotkey_changed(&action, hotkey)
@@ -231,6 +245,12 @@ impl App {
                     reply,
                     from_hotkey,
                 } => self.switch_done(entry, result, reply, from_hotkey),
+                Ev::ProfileDone {
+                    profile,
+                    result,
+                    reply,
+                    from_hotkey,
+                } => self.profile_done(profile, result, reply, from_hotkey),
                 Ev::AutoConfigured(result) => self.autoconfigured(result),
             }
         }
@@ -260,6 +280,17 @@ impl App {
             header,
             inputs,
             toggle: Hotkey::parse_opt(&cfg.toggle_hotkey),
+            profiles: cfg
+                .profiles
+                .iter()
+                .map(|p| {
+                    (
+                        p.name.clone(),
+                        Hotkey::parse_opt(&p.hotkey),
+                        self.last_profile.as_deref() == Some(p.name.as_str()),
+                    )
+                })
+                .collect(),
             autostart: autostart::is_enabled(),
         });
     }
@@ -354,6 +385,55 @@ impl App {
         }
     }
 
+    // --- picture profiles ------------------------------------------------------------------------
+
+    fn apply_profile(&self, index: usize, reply: Option<Reply>, from_hotkey: bool) {
+        let Some(profile) = self.config.profiles.get(index).cloned() else {
+            return;
+        };
+        let tx = self.tx.clone();
+        self.run_ddc(move |m| {
+            let result = m.current.apply(&profile.writes());
+            let _ = tx.send(Ev::ProfileDone {
+                profile,
+                result,
+                reply,
+                from_hotkey,
+            });
+        });
+    }
+
+    fn profile_done(
+        &mut self,
+        profile: PictureProfile,
+        result: Result<(), String>,
+        reply: Option<Reply>,
+        from_hotkey: bool,
+    ) {
+        if from_hotkey {
+            self.hotkey_busy = false;
+        }
+        match result {
+            Ok(()) => {
+                self.last_profile = Some(profile.name.clone());
+                self.update_tray();
+                let msg = format!("Picture: {}", profile.name);
+                if self.config.show_notifications {
+                    self.ui.notify("Picture changed", &msg, false, 1500);
+                }
+                if let Some(r) = reply {
+                    let _ = r.send(Response::ok(msg));
+                }
+            }
+            Err(e) => {
+                self.notify_error(&format!("Could not apply {}", profile.name), &e);
+                if let Some(r) = reply {
+                    let _ = r.send(Response::err(e));
+                }
+            }
+        }
+    }
+
     // --- global shortcuts ------------------------------------------------------------------------
 
     /// (action id, friendly name, hotkey) for every shortcut the app owns.
@@ -378,6 +458,13 @@ impl App {
                 self.config.toggle_hotkey.clone(),
             ));
         }
+        out.extend(self.config.profiles.iter().enumerate().map(|(i, p)| {
+            (
+                profile_action_id(i),
+                format!("Picture: {}", p.name),
+                p.hotkey.clone(),
+            )
+        }));
         out
     }
 
@@ -400,7 +487,9 @@ impl App {
                         format!(
                             "{} ({})",
                             a.hotkey.as_ref().unwrap(),
-                            a.friendly.trim_start_matches("Switch to ")
+                            a.friendly
+                        .trim_start_matches("Switch to ")
+                        .trim_start_matches("Picture: ")
                         )
                     })
                     .collect();
@@ -431,6 +520,11 @@ impl App {
         {
             self.hotkey_busy = true;
             self.switch(i, None, true);
+        } else if let Some(i) =
+            (0..self.config.profiles.len()).find(|i| profile_action_id(*i) == action)
+        {
+            self.hotkey_busy = true;
+            self.apply_profile(i, None, true);
         }
     }
 
@@ -454,6 +548,11 @@ impl App {
             .map(|i| &mut self.config.inputs[i])
         {
             e.hotkey = new;
+        } else if let Some(p) = (0..self.config.profiles.len())
+            .find(|i| profile_action_id(*i) == action)
+            .map(|i| &mut self.config.profiles[i])
+        {
+            p.hotkey = new;
         }
         if let Err(e) = self.config.save() {
             self.notify_error("Could not save settings", &e.to_string());
@@ -559,6 +658,14 @@ impl App {
             });
             self.last_known = None;
         }
+        // Keep the tick only while that profile still exists.
+        if self
+            .last_profile
+            .as_ref()
+            .is_some_and(|n| crate::config::find_profile(&config.profiles, n).is_none())
+        {
+            self.last_profile = None;
+        }
         self.config = config;
         self.update_tray();
         self.register_hotkeys(true);
@@ -592,6 +699,43 @@ impl App {
                 }
             }
             "next" => self.next_input(Some(reply), false),
+            "picture" => match req.arg.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
+                None => send(Response::ok(ipc::profiles_text(&self.config.profiles))),
+                Some(name) => match self
+                    .config
+                    .profiles
+                    .iter()
+                    .position(|p| p.name.eq_ignore_ascii_case(name))
+                {
+                    Some(i) => self.apply_profile(i, Some(reply), false),
+                    None => send(Response::err(format!(
+                        "No picture profile named {name:?}. Profiles:\n{}",
+                        ipc::profiles_text(&self.config.profiles)
+                    ))),
+                },
+            },
+            "getvcp" => {
+                let (target, vcp) = (req.monitor, req.vcp.unwrap_or(0));
+                self.run_ddc(move |m| {
+                    let _ = reply.send(match m.get(target).get_vcp(vcp) {
+                        Ok(v) => Response {
+                            value: Some(v),
+                            ..Response::ok(format!("VCP 0x{vcp:02X} = {v}"))
+                        },
+                        Err(e) => Response::err(e),
+                    });
+                });
+            }
+            "setvcp" => {
+                let (target, vcp) = (req.monitor, req.vcp.unwrap_or(0));
+                let value = u16::try_from(req.value.unwrap_or(0)).unwrap_or(u16::MAX);
+                self.run_ddc(move |m| {
+                    let _ = reply.send(match m.get(target).set_vcp(vcp, value) {
+                        Ok(()) => Response::ok(format!("Set VCP 0x{vcp:02X} to {value}")),
+                        Err(e) => Response::err(e),
+                    });
+                });
+            }
             "get" => {
                 let config = self.config.clone();
                 let target = req.monitor;

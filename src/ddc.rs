@@ -280,6 +280,25 @@ impl Monitor {
         self.with_channel(Bus::capabilities)
     }
 
+    /// Any VCP feature's current value (brightness, contrast...).
+    pub fn get_vcp(&mut self, vcp: u8) -> Result<u32, String> {
+        self.with_channel(|c| c.get_vcp(vcp))
+    }
+
+    pub fn set_vcp(&mut self, vcp: u8, value: u16) -> Result<(), String> {
+        self.with_channel(|c| c.set_vcp(vcp, value))
+    }
+
+    /// Applies (VCP code, value) pairs in order. Stops at the first failure, saying which
+    /// setting failed.
+    pub fn apply(&mut self, writes: &[(u8, u16)]) -> Result<(), String> {
+        for (vcp, value) in writes {
+            self.set_vcp(*vcp, *value)
+                .map_err(|e| format!("Setting VCP 0x{vcp:02X} to {value} failed: {e}"))?;
+        }
+        Ok(())
+    }
+
     pub fn set_input(&mut self, value: u32) -> Result<(), String> {
         let value = u16::try_from(value)
             .map_err(|_| format!("Input value {value} is out of range (0-65535)"))?;

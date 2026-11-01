@@ -1,7 +1,9 @@
-//! JSON config (the same schema on Linux and Windows) and the "Start with login" autostart entry.
+//! JSON config (the same schema on Linux and Windows), picture profiles, and the "Start with login"
+//! autostart entry.
 
 use crate::hotkey::Hotkey;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -58,6 +60,99 @@ pub fn next_input(inputs: &[InputEntry], current: Option<u32>) -> Result<&InputE
         .ok_or_else(|| "No input is included in \"Next input\" (see Settings)".into())
 }
 
+/// A monitor setting a picture profile can include: (config key, VCP code, label, maximum).
+/// Profiles apply them in this order: the colour preset first, since changing it can reset the
+/// colour gains on some monitors, and brightness after contrast.
+pub const PICTURE_CONTROLS: &[(&str, u8, &str, u16)] = &[
+    ("ColorPreset", 0x14, "Colour temperature", 0xFF),
+    ("RedGain", 0x16, "Red gain", 100),
+    ("GreenGain", 0x18, "Green gain", 100),
+    ("BlueGain", 0x1A, "Blue gain", 100),
+    ("Contrast", 0x12, "Contrast", 100),
+    ("Brightness", 0x10, "Brightness", 100),
+    ("Volume", 0x62, "Volume", 100),
+];
+
+/// MCCS name of a colour preset value (VCP 0x14).
+pub fn color_preset_name(value: u16) -> Option<&'static str> {
+    Some(match value {
+        0x01 => "sRGB",
+        0x02 => "Native",
+        0x03 => "4000K",
+        0x04 => "5000K",
+        0x05 => "6500K",
+        0x06 => "7500K",
+        0x07 => "8200K",
+        0x08 => "9300K",
+        0x09 => "10000K",
+        0x0A => "11500K",
+        0x0B => "User 1",
+        0x0C => "User 2",
+        0x0D => "User 3",
+        _ => return None,
+    })
+}
+
+/// A named set of monitor settings applied together ("Day", "Evening"...). Only the settings it
+/// lists are changed.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct PictureProfile {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub hotkey: Option<String>,
+    /// Config key from `PICTURE_CONTROLS` -> value.
+    #[serde(default)]
+    pub values: BTreeMap<String, u16>,
+}
+
+impl PictureProfile {
+    /// (VCP code, value) pairs, in the order they are applied.
+    pub fn writes(&self) -> Vec<(u8, u16)> {
+        PICTURE_CONTROLS
+            .iter()
+            .filter_map(|(key, code, _, _)| self.values.get(*key).map(|v| (*code, *v)))
+            .collect()
+    }
+
+    /// "Brightness 44, Contrast 50, Colour temperature 6500K": the settings people tell profiles
+    /// apart by come first.
+    pub fn summary(&self) -> String {
+        const ORDER: [&str; 7] = [
+            "Brightness",
+            "Contrast",
+            "ColorPreset",
+            "RedGain",
+            "GreenGain",
+            "BlueGain",
+            "Volume",
+        ];
+        let parts: Vec<String> = ORDER
+            .iter()
+            .filter_map(|k| PICTURE_CONTROLS.iter().find(|(key, _, _, _)| key == k))
+            .filter_map(|(key, code, label, _)| {
+                let v = *self.values.get(*key)?;
+                Some(match color_preset_name(v).filter(|_| *code == 0x14) {
+                    Some(name) => format!("{label} {name}"),
+                    None => format!("{label} {v}"),
+                })
+            })
+            .collect();
+        if parts.is_empty() {
+            "(no settings)".into()
+        } else {
+            parts.join(", ")
+        }
+    }
+}
+
+/// A profile by name (case-insensitive).
+pub fn find_profile<'a>(profiles: &'a [PictureProfile], name: &str) -> Option<&'a PictureProfile> {
+    let name = name.trim();
+    profiles.iter().find(|p| p.name.eq_ignore_ascii_case(name))
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase", default)]
 pub struct AppConfig {
@@ -65,6 +160,8 @@ pub struct AppConfig {
     pub monitor_device: Option<String>,
     pub inputs: Vec<InputEntry>,
     pub toggle_hotkey: Option<String>,
+    /// Picture profiles, shown in the tray's Picture menu.
+    pub profiles: Vec<PictureProfile>,
     /// A notification after each switch.
     pub show_notifications: bool,
     /// A notification when the app starts, so it's clear it is running in the tray.
@@ -80,6 +177,7 @@ impl Default for AppConfig {
             monitor_device: None,
             inputs: Vec::new(),
             toggle_hotkey: Some(crate::autoconfig::TOGGLE_HOTKEY.into()),
+            profiles: Vec::new(),
             show_notifications: true,
             show_startup_notification: true,
         }
@@ -196,6 +294,7 @@ impl AppConfig {
             }
         };
         config.inputs.iter_mut().for_each(|e| blank(&mut e.hotkey));
+        config.profiles.iter_mut().for_each(|p| blank(&mut p.hotkey));
         blank(&mut config.toggle_hotkey);
         config.check()?;
         Ok(config)
@@ -222,6 +321,33 @@ impl AppConfig {
             shortcuts.push((name.to_string(), &e.hotkey));
         }
         shortcuts.push(("Next input".into(), &self.toggle_hotkey));
+        let mut names: Vec<String> = Vec::new();
+        for (i, p) in self.profiles.iter().enumerate() {
+            let name = p.name.trim();
+            if name.is_empty() {
+                return Err(format!("Picture profile {} has no name.", i + 1));
+            }
+            if names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+                return Err(format!("Two picture profiles are called {name:?}."));
+            }
+            names.push(name.to_string());
+            if p.values.is_empty() {
+                return Err(format!("Picture profile {name:?} has no settings to apply."));
+            }
+            for (key, value) in &p.values {
+                let Some((_, _, label, max)) =
+                    PICTURE_CONTROLS.iter().find(|(k, _, _, _)| k == key)
+                else {
+                    return Err(format!("Picture profile {name:?}: unknown setting {key:?}."));
+                };
+                if value > max {
+                    return Err(format!(
+                        "Picture profile {name:?}: {label} {value} is out of range (0 to {max})."
+                    ));
+                }
+            }
+            shortcuts.push((format!("Picture: {name}"), &p.hotkey));
+        }
         let mut seen: Vec<Hotkey> = Vec::new();
         for (owner, text) in shortcuts {
             let Some(text) = text.as_deref().filter(|t| !t.trim().is_empty()) else {
@@ -321,5 +447,75 @@ mod tests {
         assert_eq!(ok.inputs[0].name, "DP");
         assert_eq!(ok.inputs[0].hotkey, None);
         assert!(ok.show_notifications);
+    }
+
+    fn profile(name: &str, values: &[(&str, u16)], hotkey: Option<&str>) -> PictureProfile {
+        PictureProfile {
+            name: name.into(),
+            hotkey: hotkey.map(String::from),
+            values: values.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+        }
+    }
+
+    #[test]
+    fn profile_writes_follow_control_order() {
+        let p = profile("Day", &[("Brightness", 80), ("ColorPreset", 5), ("Contrast", 50)], None);
+        // Colour preset first, brightness after contrast, whatever the JSON order.
+        assert_eq!(p.writes(), vec![(0x14, 5), (0x12, 50), (0x10, 80)]);
+        assert_eq!(
+            p.summary(),
+            "Brightness 80, Contrast 50, Colour temperature 6500K"
+        );
+        assert_eq!(profile("Empty", &[], None).summary(), "(no settings)");
+    }
+
+    #[test]
+    fn profiles_are_checked() {
+        let mut cfg = AppConfig {
+            inputs: inputs(),
+            ..Default::default()
+        };
+        cfg.profiles = vec![profile("Day", &[("Brightness", 80)], Some("Ctrl+Alt+Shift+D"))];
+        assert!(cfg.check().is_ok());
+
+        cfg.profiles = vec![profile("Day", &[("Brightness", 101)], None)];
+        assert!(cfg.check().unwrap_err().contains("out of range"));
+
+        cfg.profiles = vec![profile("Day", &[("Sharpness", 5)], None)];
+        assert!(cfg.check().unwrap_err().contains("unknown setting"));
+
+        cfg.profiles = vec![profile("Day", &[], None)];
+        assert!(cfg.check().unwrap_err().contains("no settings"));
+
+        cfg.profiles = vec![
+            profile("Day", &[("Brightness", 80)], None),
+            profile("day", &[("Brightness", 30)], None),
+        ];
+        assert!(cfg.check().unwrap_err().contains("Two picture profiles"));
+
+        // A profile shortcut may not reuse the Next-input shortcut.
+        cfg.profiles = vec![profile(
+            "Day",
+            &[("Brightness", 80)],
+            cfg.toggle_hotkey.clone().as_deref(),
+        )];
+        assert!(cfg.check().unwrap_err().contains("more than once"));
+    }
+
+    #[test]
+    fn profiles_round_trip_and_old_configs_load() {
+        let mut cfg = AppConfig {
+            inputs: inputs(),
+            ..Default::default()
+        };
+        cfg.profiles = vec![profile("Evening", &[("Brightness", 30), ("ColorPreset", 5)], None)];
+        let text = cfg.to_json().unwrap();
+        assert!(text.contains("\"Profiles\""));
+        assert!(text.contains("\"Brightness\": 30"));
+        assert_eq!(AppConfig::from_export(&text).unwrap(), cfg);
+        // A config saved by 1.1.0 has no "Profiles": it loads with none.
+        let old = r#"{"Inputs":[{"Name":"HDMI-1","Value":17}]}"#;
+        assert!(AppConfig::from_export(old).unwrap().profiles.is_empty());
+        assert_eq!(find_profile(&cfg.profiles, " evening ").unwrap().name, "Evening");
     }
 }
