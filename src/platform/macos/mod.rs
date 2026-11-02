@@ -60,7 +60,7 @@ pub mod autostart {
     use std::path::PathBuf;
     use std::{fs, io};
 
-    const LABEL: &str = "io.github.a-elkaim.monitor-input-switcher";
+    const LABEL: &str = "io.github.lobsterliberation.monitor-input-switcher";
 
     fn path() -> PathBuf {
         home()

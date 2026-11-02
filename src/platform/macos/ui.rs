@@ -20,7 +20,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Sender};
 use std::time::Duration;
 use tray_icon::menu::accelerator::Accelerator;
-use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 const ID_NEXT: &str = "next";
@@ -28,6 +28,7 @@ const ID_SETTINGS: &str = "settings";
 const ID_AUTOSTART: &str = "autostart";
 const ID_QUIT: &str = "quit";
 const INPUT_PREFIX: &str = "input:";
+const PROFILE_PREFIX: &str = "profile:";
 
 /// Keeps the main thread for NSApplication (as a menu bar app with no Dock icon) and runs the
 /// tray app on another thread. Exits the process with the app's exit code when it returns.
@@ -119,6 +120,20 @@ fn build_menu(m: &TrayModel) -> Menu {
             accelerator(&m.toggle),
         ));
     }
+    if !m.profiles.is_empty() {
+        let picture = Submenu::with_id("picture", "Picture", true);
+        for (i, (name, hk, checked)) in m.profiles.iter().enumerate() {
+            let _ = picture.append(&CheckMenuItem::with_id(
+                format!("{PROFILE_PREFIX}{i}"),
+                label(name),
+                true,
+                *checked,
+                accelerator(hk),
+            ));
+        }
+        let _ = menu.append(&PredefinedMenuItem::separator());
+        let _ = menu.append(&picture);
+    }
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&MenuItem::with_id(ID_SETTINGS, "Settings...", true, None));
     let _ = menu.append(&CheckMenuItem::with_id(
@@ -141,7 +156,7 @@ fn build_menu(m: &TrayModel) -> Menu {
 fn menu_clicked(id: &str) {
     // AppKit flips a check item's tick on click. The ticks must follow the model (the current
     // input, the real autostart state), so rebuild the menu once this click is handled.
-    if id == ID_AUTOSTART || id.starts_with(INPUT_PREFIX) {
+    if id == ID_AUTOSTART || id.starts_with(INPUT_PREFIX) || id.starts_with(PROFILE_PREFIX) {
         on_main(|s| s.rebuild_menu());
     }
     with_state(|s| {
@@ -153,10 +168,16 @@ fn menu_clicked(id: &str) {
                 s.model.autostart = !s.model.autostart;
                 UiEvent::SetAutostart(s.model.autostart)
             }
-            _ => match id.strip_prefix(INPUT_PREFIX).and_then(|i| i.parse().ok()) {
-                Some(i) => UiEvent::Switch(i),
-                None => return,
-            },
+            _ => {
+                let index = |prefix: &str| id.strip_prefix(prefix).and_then(|i| i.parse().ok());
+                if let Some(i) = index(INPUT_PREFIX) {
+                    UiEvent::Switch(i)
+                } else if let Some(i) = index(PROFILE_PREFIX) {
+                    UiEvent::Profile(i)
+                } else {
+                    return;
+                }
+            }
         };
         let _ = s.tx.send(ev);
     });

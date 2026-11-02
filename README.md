@@ -6,6 +6,7 @@
 > - **Picture profiles:** named sets of brightness, contrast, colour temperature and colour gains,
 >   applied from a Picture menu in the tray, a shortcut, or `picture <NAME>`
 > - **Brightness shortcuts:** `Ctrl+Alt+Shift+Up` / `Down` by default, plus a `brightness` command
+> - **macOS (Apple Silicon):** a menu bar version with all of the above
 >
 > Downloads are on [this fork's releases page](https://github.com/lobsterliberation/MonitorInputSwitcherAcerZ57extended/releases/latest).
 > Everything else works as in the original, and settings files are compatible both ways (the
@@ -184,8 +185,10 @@ start, so you can move the exe and just start it again.
 Download `monitor-input-switcher-<version>-macos-arm64.zip` from the
 [latest release](https://github.com/lobsterliberation/MonitorInputSwitcherAcerZ57extended/releases/latest), unzip it, move
 `MonitorInputSwitcher.app` to Applications and open it. It lives in the menu bar (no Dock icon). The
-app isn't notarized, so the first time macOS says it can't verify the developer: right-click the app
-and choose Open, or run `xattr -dr com.apple.quarantine /Applications/MonitorInputSwitcher.app`.
+app isn't notarized, so the first time macOS says it can't verify the developer. Click Done, then open
+System Settings > Privacy & Security, scroll down to the message about MonitorInputSwitcher and click
+**Open Anyway** (once per version). From a terminal,
+`xattr -dr com.apple.quarantine /Applications/MonitorInputSwitcher.app` does the same.
 
 To build it yourself, you'll need [Rust](https://rustup.rs) and the Xcode command line tools
 (`xcode-select --install`):
@@ -205,7 +208,7 @@ port of some Macs (M1 Mac mini, several MacBook Pro models) does not pass DDC/CI
 DisplayLink adapters. Intel Macs aren't supported.
 
 "Open at login" is the LaunchAgent
-`~/Library/LaunchAgents/io.github.a-elkaim.monitor-input-switcher.plist`, pointing at the app's
+`~/Library/LaunchAgents/io.github.lobsterliberation.monitor-input-switcher.plist`, pointing at the app's
 current path; it takes effect from the next login. For the command line, link the binary onto your
 `PATH`:
 

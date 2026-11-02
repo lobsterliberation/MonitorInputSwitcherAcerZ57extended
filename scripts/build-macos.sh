@@ -38,7 +38,7 @@ cat >"$app/Contents/Info.plist" <<EOF
     <key>CFBundleDisplayName</key>
     <string>Monitor Input Switcher</string>
     <key>CFBundleIdentifier</key>
-    <string>io.github.a-elkaim.monitor-input-switcher</string>
+    <string>io.github.lobsterliberation.monitor-input-switcher</string>
     <key>CFBundleExecutable</key>
     <string>monitor-input-switcher</string>
     <key>CFBundleIconFile</key>
