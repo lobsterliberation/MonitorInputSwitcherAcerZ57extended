@@ -78,6 +78,9 @@ enum Capture {
     Profile(usize),
     BrightnessUp,
     BrightnessDown,
+    VolumeUp,
+    VolumeDown,
+    Mute,
 }
 
 enum Msg {
@@ -87,7 +90,7 @@ enum Msg {
     Capabilities(Result<String, String>),
     /// None: the file dialog was cancelled.
     Exported(Result<Option<PathBuf>, String>),
-    Imported(Result<Option<(PathBuf, AppConfig)>, String>),
+    Imported(Result<Option<(PathBuf, Box<AppConfig>)>, String>),
     /// Values read from the monitor for a profile row (None: a new profile).
     ProfileRead(Option<usize>, Result<BTreeMap<String, u16>, String>),
     ProfileApplied(usize, Result<(), String>),
@@ -141,6 +144,10 @@ struct SettingsApp {
     brightness_up: Option<Hotkey>,
     brightness_down: Option<Hotkey>,
     brightness_step: u16,
+    volume_up: Option<Hotkey>,
+    volume_down: Option<Hotkey>,
+    volume_step: u16,
+    mute: Option<Hotkey>,
     autostart: bool,
     notifications: bool,
     startup_notification: bool,
@@ -292,6 +299,10 @@ impl SettingsApp {
             brightness_up: Hotkey::parse_opt(&config.brightness_up_hotkey),
             brightness_down: Hotkey::parse_opt(&config.brightness_down_hotkey),
             brightness_step: config.brightness_step,
+            volume_up: Hotkey::parse_opt(&config.volume_up_hotkey),
+            volume_down: Hotkey::parse_opt(&config.volume_down_hotkey),
+            volume_step: config.volume_step,
+            mute: Hotkey::parse_opt(&config.mute_hotkey),
             autostart: autostart::is_enabled(),
             notifications: config.show_notifications,
             startup_notification: config.show_startup_notification,
@@ -328,6 +339,10 @@ impl SettingsApp {
         self.brightness_up = Hotkey::parse_opt(&config.brightness_up_hotkey);
         self.brightness_down = Hotkey::parse_opt(&config.brightness_down_hotkey);
         self.brightness_step = config.brightness_step;
+        self.volume_up = Hotkey::parse_opt(&config.volume_up_hotkey);
+        self.volume_down = Hotkey::parse_opt(&config.volume_down_hotkey);
+        self.volume_step = config.volume_step;
+        self.mute = Hotkey::parse_opt(&config.mute_hotkey);
         self.notifications = config.show_notifications;
         self.startup_notification = config.show_startup_notification;
         self.config = config;
@@ -363,7 +378,7 @@ impl SettingsApp {
             let Some(path) = file_dialog("Import settings").pick_file() else {
                 return Msg::Imported(Ok(None));
             };
-            Msg::Imported(AppConfig::import(&path).map(|c| Some((path, c))))
+            Msg::Imported(AppConfig::import(&path).map(|c| Some((path, Box::new(c)))))
         });
     }
 
@@ -469,6 +484,9 @@ impl SettingsApp {
                 },
                 Capture::BrightnessUp => &mut self.brightness_up,
                 Capture::BrightnessDown => &mut self.brightness_down,
+                Capture::VolumeUp => &mut self.volume_up,
+                Capture::VolumeDown => &mut self.volume_down,
+                Capture::Mute => &mut self.mute,
             };
             match key {
                 egui::Key::Escape if plain => {}
@@ -513,6 +531,9 @@ impl SettingsApp {
             Capture::Profile(i) => &self.profiles[i].hotkey,
             Capture::BrightnessUp => &self.brightness_up,
             Capture::BrightnessDown => &self.brightness_down,
+            Capture::VolumeUp => &self.volume_up,
+            Capture::VolumeDown => &self.volume_down,
+            Capture::Mute => &self.mute,
         };
         let text = if recording {
             "Press keys... (Esc cancels)".to_string()
@@ -557,6 +578,9 @@ impl SettingsApp {
                 .chain(self.profiles.iter().filter_map(|p| p.hotkey.clone()))
                 .chain(self.brightness_up.clone())
                 .chain(self.brightness_down.clone())
+                .chain(self.volume_up.clone())
+                .chain(self.volume_down.clone())
+                .chain(self.mute.clone())
                 .collect();
             let hotkey = (0..9)
                 .filter_map(|i| {
@@ -609,6 +633,10 @@ impl SettingsApp {
         cfg.brightness_up_hotkey = self.brightness_up.as_ref().map(Hotkey::to_string);
         cfg.brightness_down_hotkey = self.brightness_down.as_ref().map(Hotkey::to_string);
         cfg.brightness_step = self.brightness_step;
+        cfg.volume_up_hotkey = self.volume_up.as_ref().map(Hotkey::to_string);
+        cfg.volume_down_hotkey = self.volume_down.as_ref().map(Hotkey::to_string);
+        cfg.volume_step = self.volume_step;
+        cfg.mute_hotkey = self.mute.as_ref().map(Hotkey::to_string);
         cfg.show_notifications = self.notifications;
         cfg.show_startup_notification = self.startup_notification;
         cfg.check()?;
@@ -905,7 +933,7 @@ impl eframe::App for SettingsApp {
                     self.file_dialog = false;
                     match result {
                         Ok(Some((path, config))) => {
-                            self.load_form(config);
+                            self.load_form(*config);
                             self.error = None;
                             self.status = Some(format!(
                                 "Imported {}. Review the settings, then click Save to apply them.",
@@ -1076,9 +1104,25 @@ impl eframe::App for SettingsApp {
                         self.hotkey_button(ui, Capture::BrightnessDown);
                         ui.label("");
                         ui.end_row();
+                        ui.label("Volume up (monitor speakers):");
+                        self.hotkey_button(ui, Capture::VolumeUp);
+                        ui.horizontal(|ui| {
+                            ui.label("step");
+                            ui.add(egui::DragValue::new(&mut self.volume_step).range(1..=50))
+                                .on_hover_text("How much each press changes the volume (out of 100)");
+                        });
+                        ui.end_row();
+                        ui.label("Volume down:");
+                        self.hotkey_button(ui, Capture::VolumeDown);
+                        ui.label("");
+                        ui.end_row();
+                        ui.label("Mute / unmute:");
+                        self.hotkey_button(ui, Capture::Mute);
+                        ui.label("");
+                        ui.end_row();
                     });
                     ui.checkbox(&mut self.autostart, platform::START_WITH_LOGIN);
-                    ui.checkbox(&mut self.notifications, "Show a notification after each change (input, picture, brightness)");
+                    ui.checkbox(&mut self.notifications, "Show a notification after each change (input, picture, brightness, volume)");
                     ui.checkbox(
                         &mut self.startup_notification,
                         "Show a notification when the app starts",

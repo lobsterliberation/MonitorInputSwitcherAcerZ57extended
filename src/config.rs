@@ -93,34 +93,86 @@ pub fn color_preset_name(value: u16) -> Option<&'static str> {
     })
 }
 
-pub const BRIGHTNESS_VCP: u8 = 0x10;
-pub const BRIGHTNESS_MAX: u16 = 100;
 pub const BRIGHTNESS_UP_HOTKEY: &str = "Ctrl+Alt+Shift+Up";
 pub const BRIGHTNESS_DOWN_HOTKEY: &str = "Ctrl+Alt+Shift+Down";
+pub const VOLUME_UP_HOTKEY: &str = "Ctrl+Alt+Shift+Right";
+pub const VOLUME_DOWN_HOTKEY: &str = "Ctrl+Alt+Shift+Left";
+/// The highest brightness or volume set by a step or a number.
+pub const LEVEL_MAX: u16 = 100;
 
-/// The brightness a `brightness` argument asks for: "up"/"down" move by `step`, "+5"/"-5" by that
-/// much, "60" sets it; the result stays within 0-100.
-pub fn brightness_target(arg: &str, current: u32, step: u16) -> Result<u16, String> {
-    let arg = arg.trim().to_lowercase();
-    let current = i64::from(current.min(u32::from(BRIGHTNESS_MAX)));
-    let invalid = || {
-        format!("{arg:?} is not a brightness: use up, down, a number (0-100), or +N / -N")
-    };
-    let target = match arg.as_str() {
-        "up" => current + i64::from(step),
-        "down" => current - i64::from(step),
-        _ if arg.starts_with('+') || arg.starts_with('-') => {
-            current + arg.parse::<i64>().map_err(|_| invalid())?
+/// A monitor setting the shortcuts and `brightness`/`volume` commands change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Level {
+    Brightness,
+    Volume,
+    /// The audio mute (VCP 0x8D): 1 = muted, 2 = not muted.
+    Mute,
+}
+
+impl Level {
+    pub fn vcp(self) -> u8 {
+        match self {
+            Level::Brightness => 0x10,
+            Level::Volume => 0x62,
+            Level::Mute => 0x8D,
         }
-        _ => {
-            let v: i64 = arg.parse().map_err(|_| invalid())?;
-            if !(0..=i64::from(BRIGHTNESS_MAX)).contains(&v) {
-                return Err(format!("Brightness {v} is out of range (0 to {BRIGHTNESS_MAX})"));
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Level::Brightness => "Brightness",
+            Level::Volume => "Volume",
+            Level::Mute => "Mute",
+        }
+    }
+
+    /// What a change to `value` says: "Brightness 60", "Volume 40", "Muted".
+    pub fn describe(self, value: u16) -> String {
+        match self {
+            Level::Mute if value & 0xFF == 1 => "Muted".into(),
+            Level::Mute => "Unmuted".into(),
+            _ => format!("{} {value}", self.name()),
+        }
+    }
+
+    /// The value an argument asks for, given the current one.
+    /// Brightness/volume: "up"/"down" move by `step`, "+5"/"-5" by that much, "60" sets it, all
+    /// within 0-100. Mute: "mute", "unmute" or "toggle".
+    pub fn target(self, arg: &str, current: u32, step: u16) -> Result<u16, String> {
+        let arg = arg.trim().to_lowercase();
+        if self == Level::Mute {
+            let muted = current & 0xFF == 1;
+            return match arg.as_str() {
+                "mute" | "on" => Ok(1),
+                "unmute" | "off" => Ok(2),
+                "toggle" | "" => Ok(if muted { 2 } else { 1 }),
+                _ => Err(format!("{arg:?}: use mute, unmute or toggle")),
+            };
+        }
+        let noun = self.name().to_lowercase();
+        let current = i64::from(current.min(u32::from(LEVEL_MAX)));
+        let invalid = || {
+            format!("{arg:?} is not a {noun}: use up, down, a number (0-100), or +N / -N")
+        };
+        let target = match arg.as_str() {
+            "up" => current + i64::from(step),
+            "down" => current - i64::from(step),
+            _ if arg.starts_with('+') || arg.starts_with('-') => {
+                current + arg.parse::<i64>().map_err(|_| invalid())?
             }
-            v
-        }
-    };
-    Ok(target.clamp(0, i64::from(BRIGHTNESS_MAX)) as u16)
+            _ => {
+                let v: i64 = arg.parse().map_err(|_| invalid())?;
+                if !(0..=i64::from(LEVEL_MAX)).contains(&v) {
+                    return Err(format!(
+                        "{} {v} is out of range (0 to {LEVEL_MAX})",
+                        self.name()
+                    ));
+                }
+                v
+            }
+        };
+        Ok(target.clamp(0, i64::from(LEVEL_MAX)) as u16)
+    }
 }
 
 /// A named set of monitor settings applied together ("Day", "Evening"...). Only the settings it
@@ -196,6 +248,12 @@ pub struct AppConfig {
     pub brightness_down_hotkey: Option<String>,
     /// How much a brightness shortcut changes the brightness (out of 100).
     pub brightness_step: u16,
+    pub volume_up_hotkey: Option<String>,
+    pub volume_down_hotkey: Option<String>,
+    /// How much a volume shortcut changes the monitor's speaker volume (out of 100).
+    pub volume_step: u16,
+    /// Toggles the monitor's audio mute.
+    pub mute_hotkey: Option<String>,
     /// A notification after each switch.
     pub show_notifications: bool,
     /// A notification when the app starts, so it's clear it is running in the tray.
@@ -215,6 +273,10 @@ impl Default for AppConfig {
             brightness_up_hotkey: Some(BRIGHTNESS_UP_HOTKEY.into()),
             brightness_down_hotkey: Some(BRIGHTNESS_DOWN_HOTKEY.into()),
             brightness_step: 10,
+            volume_up_hotkey: Some(VOLUME_UP_HOTKEY.into()),
+            volume_down_hotkey: Some(VOLUME_DOWN_HOTKEY.into()),
+            volume_step: 5,
+            mute_hotkey: None,
             show_notifications: true,
             show_startup_notification: true,
         }
@@ -335,6 +397,9 @@ impl AppConfig {
         config.profiles.iter_mut().for_each(|p| blank(&mut p.hotkey));
         blank(&mut config.brightness_up_hotkey);
         blank(&mut config.brightness_down_hotkey);
+        blank(&mut config.volume_up_hotkey);
+        blank(&mut config.volume_down_hotkey);
+        blank(&mut config.mute_hotkey);
         blank(&mut config.toggle_hotkey);
         config.check()?;
         Ok(config)
@@ -363,11 +428,16 @@ impl AppConfig {
         shortcuts.push(("Next input".into(), &self.toggle_hotkey));
         shortcuts.push(("Brightness up".into(), &self.brightness_up_hotkey));
         shortcuts.push(("Brightness down".into(), &self.brightness_down_hotkey));
-        if !(1..=50).contains(&self.brightness_step) {
-            return Err(format!(
-                "Brightness step {} is out of range (1 to 50).",
-                self.brightness_step
-            ));
+        shortcuts.push(("Volume up".into(), &self.volume_up_hotkey));
+        shortcuts.push(("Volume down".into(), &self.volume_down_hotkey));
+        shortcuts.push(("Mute".into(), &self.mute_hotkey));
+        for (name, step) in [
+            ("Brightness", self.brightness_step),
+            ("Volume", self.volume_step),
+        ] {
+            if !(1..=50).contains(&step) {
+                return Err(format!("{name} step {step} is out of range (1 to 50)."));
+            }
         }
         let mut names: Vec<String> = Vec::new();
         for (i, p) in self.profiles.iter().enumerate() {
@@ -569,17 +639,17 @@ mod tests {
 
     #[test]
     fn brightness_targets() {
-        assert_eq!(brightness_target("up", 44, 10), Ok(54));
-        assert_eq!(brightness_target("DOWN", 44, 10), Ok(34));
-        assert_eq!(brightness_target("up", 95, 10), Ok(100));
-        assert_eq!(brightness_target("down", 4, 10), Ok(0));
-        assert_eq!(brightness_target("+5", 44, 10), Ok(49));
-        assert_eq!(brightness_target("-50", 44, 10), Ok(0));
-        assert_eq!(brightness_target(" 60 ", 44, 10), Ok(60));
-        assert!(brightness_target("120", 44, 10).is_err());
-        assert!(brightness_target("brighter", 44, 10).is_err());
+        assert_eq!(Level::Brightness.target("up", 44, 10), Ok(54));
+        assert_eq!(Level::Brightness.target("DOWN", 44, 10), Ok(34));
+        assert_eq!(Level::Brightness.target("up", 95, 10), Ok(100));
+        assert_eq!(Level::Brightness.target("down", 4, 10), Ok(0));
+        assert_eq!(Level::Brightness.target("+5", 44, 10), Ok(49));
+        assert_eq!(Level::Brightness.target("-50", 44, 10), Ok(0));
+        assert_eq!(Level::Brightness.target(" 60 ", 44, 10), Ok(60));
+        assert!(Level::Brightness.target("120", 44, 10).is_err());
+        assert!(Level::Brightness.target("brighter", 44, 10).is_err());
         // A monitor reporting more than 100 is treated as 100.
-        assert_eq!(brightness_target("down", 255, 10), Ok(90));
+        assert_eq!(Level::Brightness.target("down", 255, 10), Ok(90));
     }
 
     #[test]
@@ -592,6 +662,13 @@ mod tests {
         cfg.brightness_step = 0;
         assert!(cfg.check().unwrap_err().contains("step"));
         cfg.brightness_step = 10;
+        cfg.volume_step = 51;
+        assert!(cfg.check().unwrap_err().contains("Volume step"));
+        cfg.volume_step = 5;
+        cfg.mute_hotkey = cfg.volume_up_hotkey.clone();
+        assert!(cfg.check().unwrap_err().contains("more than once"));
+        cfg.mute_hotkey = None;
+        cfg.brightness_step = 10;
         cfg.brightness_down_hotkey = cfg.brightness_up_hotkey.clone();
         assert!(cfg.check().unwrap_err().contains("more than once"));
         // Configs from 1.2.0 have no brightness fields: they get the default shortcuts.
@@ -599,5 +676,23 @@ mod tests {
         let loaded = AppConfig::from_export(old).unwrap();
         assert_eq!(loaded.brightness_up_hotkey.as_deref(), Some(BRIGHTNESS_UP_HOTKEY));
         assert_eq!(loaded.brightness_step, 10);
+        assert_eq!(loaded.volume_up_hotkey.as_deref(), Some(VOLUME_UP_HOTKEY));
+        assert_eq!(loaded.volume_step, 5);
+        assert_eq!(loaded.mute_hotkey, None);
+    }
+
+    #[test]
+    fn volume_and_mute_targets() {
+        assert_eq!(Level::Volume.target("up", 70, 5), Ok(75));
+        assert_eq!(Level::Volume.target("-80", 70, 5), Ok(0));
+        assert!(Level::Volume.target("200", 70, 5).unwrap_err().contains("Volume 200"));
+        // MCCS 0x8D: 1 = muted, 2 = not muted; the high byte (screen blank) is ignored.
+        assert_eq!(Level::Mute.target("toggle", 2, 0), Ok(1));
+        assert_eq!(Level::Mute.target("toggle", 0x0101, 0), Ok(2));
+        assert_eq!(Level::Mute.target("mute", 1, 0), Ok(1));
+        assert_eq!(Level::Mute.target("unmute", 1, 0), Ok(2));
+        assert!(Level::Mute.target("loud", 1, 0).is_err());
+        assert_eq!(Level::Mute.describe(1), "Muted");
+        assert_eq!(Level::Volume.describe(40), "Volume 40");
     }
 }

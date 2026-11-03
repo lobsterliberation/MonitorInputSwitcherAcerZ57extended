@@ -3,8 +3,7 @@
 
 use crate::autoconfig;
 use crate::config::{
-    APP_NAME, AppConfig, BRIGHTNESS_VCP, InputEntry, Loaded, PictureProfile, autostart,
-    brightness_target,
+    APP_NAME, AppConfig, InputEntry, Level, Loaded, PictureProfile, autostart,
 };
 use crate::ddc::{self, Monitor};
 use crate::hotkey::Hotkey;
@@ -15,8 +14,14 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 const TOGGLE_ACTION: &str = "next-input";
-const BRIGHTNESS_UP_ACTION: &str = "brightness-up";
-const BRIGHTNESS_DOWN_ACTION: &str = "brightness-down";
+/// (action id, friendly name, level, argument) of the brightness/volume shortcuts.
+const LEVEL_ACTIONS: [(&str, &str, Level, &str); 5] = [
+    ("brightness-up", "Brightness up", Level::Brightness, "up"),
+    ("brightness-down", "Brightness down", Level::Brightness, "down"),
+    ("volume-up", "Volume up", Level::Volume, "up"),
+    ("volume-down", "Volume down", Level::Volume, "down"),
+    ("mute", "Mute", Level::Mute, "toggle"),
+];
 
 type Reply = Sender<Response>;
 
@@ -32,7 +37,8 @@ enum Ev {
         reply: Option<Reply>,
         from_hotkey: bool,
     },
-    BrightnessDone {
+    LevelDone {
+        level: Level,
         result: Result<u16, String>,
         reply: Option<Reply>,
         from_hotkey: bool,
@@ -259,11 +265,12 @@ impl App {
                     reply,
                     from_hotkey,
                 } => self.switch_done(entry, result, reply, from_hotkey),
-                Ev::BrightnessDone {
+                Ev::LevelDone {
+                    level,
                     result,
                     reply,
                     from_hotkey,
-                } => self.brightness_done(result, reply, from_hotkey),
+                } => self.level_done(level, result, reply, from_hotkey),
                 Ev::ProfileDone {
                     profile,
                     result,
@@ -404,22 +411,39 @@ impl App {
         }
     }
 
-    // --- brightness ------------------------------------------------------------------------------
+    // --- brightness, volume, mute ----------------------------------------------------------------
 
-    /// Reads the brightness and sets it from `arg` ("up", "down", "+5", "60"). Reading first keeps
-    /// it right when the brightness was changed with the monitor's own buttons.
-    fn adjust_brightness(&self, arg: String, reply: Option<Reply>, from_hotkey: bool) {
-        let step = self.config.brightness_step;
+    /// The shortcut setting of a level action.
+    fn level_hotkey(&mut self, action: &str) -> Option<&mut Option<String>> {
+        let c = &mut self.config;
+        Some(match action {
+            "brightness-up" => &mut c.brightness_up_hotkey,
+            "brightness-down" => &mut c.brightness_down_hotkey,
+            "volume-up" => &mut c.volume_up_hotkey,
+            "volume-down" => &mut c.volume_down_hotkey,
+            "mute" => &mut c.mute_hotkey,
+            _ => return None,
+        })
+    }
+
+    /// Reads the setting and changes it from `arg` ("up", "down", "+5", "60", "toggle"...).
+    /// Reading first keeps it right when it was changed with the monitor's own buttons.
+    fn adjust_level(&self, level: Level, arg: String, reply: Option<Reply>, from_hotkey: bool) {
+        let step = match level {
+            Level::Volume => self.config.volume_step,
+            _ => self.config.brightness_step,
+        };
         let tx = self.tx.clone();
         self.run_ddc(move |m| {
-            let result = m.current.get_vcp(BRIGHTNESS_VCP).and_then(|current| {
-                let target = brightness_target(&arg, current, step)?;
+            let result = m.current.get_vcp(level.vcp()).and_then(|current| {
+                let target = level.target(&arg, current, step)?;
                 if u32::from(target) != current {
-                    m.current.set_vcp(BRIGHTNESS_VCP, target)?;
+                    m.current.set_vcp(level.vcp(), target)?;
                 }
                 Ok(target)
             });
-            let _ = tx.send(Ev::BrightnessDone {
+            let _ = tx.send(Ev::LevelDone {
+                level,
                 result,
                 reply,
                 from_hotkey,
@@ -427,8 +451,9 @@ impl App {
         });
     }
 
-    fn brightness_done(
+    fn level_done(
         &mut self,
+        level: Level,
         result: Result<u16, String>,
         reply: Option<Reply>,
         from_hotkey: bool,
@@ -438,9 +463,9 @@ impl App {
         }
         match result {
             Ok(v) => {
-                let msg = format!("Brightness {v}");
+                let msg = level.describe(v);
                 if self.config.show_notifications {
-                    self.ui.notify("Brightness", &msg, false, 1000);
+                    self.ui.notify(level.name(), &msg, false, 1000);
                 }
                 if let Some(r) = reply {
                     let _ = r.send(Response {
@@ -450,11 +475,31 @@ impl App {
                 }
             }
             Err(e) => {
-                self.notify_error("Could not change the brightness", &e);
+                let what = match level {
+                    Level::Mute => "mute".to_string(),
+                    _ => format!("change the {}", level.name().to_lowercase()),
+                };
+                self.notify_error(&format!("Could not {what}"), &e);
                 if let Some(r) = reply {
                     let _ = r.send(Response::err(e));
                 }
             }
+        }
+    }
+
+    /// `brightness` / `volume` from the command line: print the value, or change it.
+    fn level_request(&self, level: Level, arg: Option<String>, reply: Reply) {
+        match arg.filter(|a| !a.trim().is_empty()) {
+            Some(arg) => self.adjust_level(level, arg, Some(reply), false),
+            None => self.run_ddc(move |m| {
+                let _ = reply.send(match m.current.get_vcp(level.vcp()) {
+                    Ok(v) => Response {
+                        value: Some(v),
+                        ..Response::ok(format!("{} {v}", level.name()))
+                    },
+                    Err(e) => Response::err(e),
+                });
+            }),
         }
     }
 
@@ -531,16 +576,16 @@ impl App {
                 self.config.toggle_hotkey.clone(),
             ));
         }
-        out.push((
-            BRIGHTNESS_UP_ACTION.into(),
-            "Brightness up".into(),
-            self.config.brightness_up_hotkey.clone(),
-        ));
-        out.push((
-            BRIGHTNESS_DOWN_ACTION.into(),
-            "Brightness down".into(),
-            self.config.brightness_down_hotkey.clone(),
-        ));
+        let c = &self.config;
+        for (id, friendly, hotkey) in [
+            ("brightness-up", "Brightness up", &c.brightness_up_hotkey),
+            ("brightness-down", "Brightness down", &c.brightness_down_hotkey),
+            ("volume-up", "Volume up", &c.volume_up_hotkey),
+            ("volume-down", "Volume down", &c.volume_down_hotkey),
+            ("mute", "Mute", &c.mute_hotkey),
+        ] {
+            out.push((id.into(), friendly.into(), hotkey.clone()));
+        }
         out.extend(self.config.profiles.iter().enumerate().map(|(i, p)| {
             (
                 profile_action_id(i),
@@ -599,10 +644,11 @@ impl App {
         if action == TOGGLE_ACTION {
             self.hotkey_busy = true;
             self.next_input(None, true);
-        } else if action == BRIGHTNESS_UP_ACTION || action == BRIGHTNESS_DOWN_ACTION {
+        } else if let Some((_, _, level, arg)) =
+            LEVEL_ACTIONS.iter().find(|(id, _, _, _)| *id == action)
+        {
             self.hotkey_busy = true;
-            let arg = if action == BRIGHTNESS_UP_ACTION { "up" } else { "down" };
-            self.adjust_brightness(arg.into(), None, true);
+            self.adjust_level(*level, arg.to_string(), None, true);
         } else if let Some(i) =
             (0..self.config.inputs.len()).find(|i| input_action_id(*i) == action)
         {
@@ -631,10 +677,8 @@ impl App {
         let new = hotkey.map(|h| h.to_string());
         if action == TOGGLE_ACTION {
             self.config.toggle_hotkey = new;
-        } else if action == BRIGHTNESS_UP_ACTION {
-            self.config.brightness_up_hotkey = new;
-        } else if action == BRIGHTNESS_DOWN_ACTION {
-            self.config.brightness_down_hotkey = new;
+        } else if let Some(slot) = self.level_hotkey(action) {
+            *slot = new;
         } else if let Some(e) = (0..self.config.inputs.len())
             .find(|i| input_action_id(*i) == action)
             .map(|i| &mut self.config.inputs[i])
@@ -806,18 +850,16 @@ impl App {
                     ))),
                 },
             },
-            "brightness" => match req.arg.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
-                Some(arg) => self.adjust_brightness(arg.to_string(), Some(reply), false),
-                None => self.run_ddc(move |m| {
-                    let _ = reply.send(match m.current.get_vcp(BRIGHTNESS_VCP) {
-                        Ok(v) => Response {
-                            value: Some(v),
-                            ..Response::ok(format!("Brightness {v}"))
-                        },
-                        Err(e) => Response::err(e),
-                    });
-                }),
-            },
+            "brightness" => self.level_request(Level::Brightness, req.arg, reply),
+            "volume" => {
+                let arg = req.arg.unwrap_or_default();
+                let lower = arg.trim().to_lowercase();
+                if ["mute", "unmute", "toggle"].contains(&lower.as_str()) {
+                    self.adjust_level(Level::Mute, lower, Some(reply), false);
+                } else {
+                    self.level_request(Level::Volume, Some(arg), reply);
+                }
+            }
             "getvcp" => {
                 let (target, vcp) = (req.monitor, req.vcp.unwrap_or(0));
                 self.run_ddc(move |m| {

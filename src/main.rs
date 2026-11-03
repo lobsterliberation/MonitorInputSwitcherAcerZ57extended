@@ -29,6 +29,7 @@ Commands:
   next             switch to the next configured input
   picture [NAME]   apply a picture profile (brightness, contrast...); without a name, list them
   brightness [B]   print the brightness, or set it: up, down, a number (0-100), +N or -N
+  volume [V]       the monitor's speaker volume, the same way; or mute, unmute, toggle
   get              print the current input
   list             list detected displays
   capabilities     show the monitor's model and the input codes it accepts
@@ -86,14 +87,20 @@ fn run_locally(cmd: &str, arg: &str) -> Result<String, String> {
             monitor.set_input(value)?;
             Ok(format!("Switched to {name}"))
         }
-        "brightness" => {
-            let current = monitor.get_vcp(config::BRIGHTNESS_VCP)?;
+        "brightness" | "volume" => {
+            let mute = ["mute", "unmute", "toggle"].contains(&arg.trim().to_lowercase().as_str());
+            let (level, step) = match cmd {
+                "volume" if mute => (config::Level::Mute, 0),
+                "volume" => (config::Level::Volume, config.volume_step),
+                _ => (config::Level::Brightness, config.brightness_step),
+            };
+            let current = monitor.get_vcp(level.vcp())?;
             if arg.trim().is_empty() {
-                return Ok(format!("Brightness {current}"));
+                return Ok(format!("{} {current}", level.name()));
             }
-            let target = config::brightness_target(arg, current, config.brightness_step)?;
-            monitor.set_vcp(config::BRIGHTNESS_VCP, target)?;
-            Ok(format!("Brightness {target}"))
+            let target = level.target(arg, current, step)?;
+            monitor.set_vcp(level.vcp(), target)?;
+            Ok(level.describe(target))
         }
         "picture" if arg.trim().is_empty() => Ok(ipc::profiles_text(&config.profiles)),
         "picture" => {
@@ -149,7 +156,7 @@ fn main() {
                 1
             }
         },
-        "switch" | "next" | "picture" | "brightness" | "get" | "list" | "capabilities" | "caps" | "settings"
+        "switch" | "next" | "picture" | "brightness" | "volume" | "get" | "list" | "capabilities" | "caps" | "settings"
         | "quit" => {
             let cmd = if cmd == "capabilities" { "caps" } else { cmd };
             let req = Request {

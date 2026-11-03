@@ -6,6 +6,9 @@
 > - **Picture profiles:** named sets of brightness, contrast, colour temperature and colour gains,
 >   applied from a Picture menu in the tray, a shortcut, or `picture <NAME>`
 > - **Brightness shortcuts:** `Ctrl+Alt+Shift+Up` / `Down` by default, plus a `brightness` command
+> - **Monitor volume and mute:** `Ctrl+Alt+Shift+Right` / `Left` by default, an optional mute
+>   shortcut, plus a `volume` command (useful on a Mac, which can't change the volume of a monitor's
+>   speakers itself)
 > - **macOS (Apple Silicon):** a menu bar version with all of the above
 >
 > Downloads are on [this fork's releases page](https://github.com/lobsterliberation/MonitorInputSwitcherAcerZ57extended/releases/latest).
@@ -85,6 +88,10 @@ window (egui) and the command line are shared; only the platform layer differs:
 - **Brightness shortcuts:** `Ctrl+Alt+Shift+Up` / `Down` by default, changeable in Settings with the
   step (10 out of 100 by default). Each press reads the monitor's brightness first, so it stays right
   after using the monitor's own buttons. Also `brightness up`, `brightness 60`, `brightness -5`...
+- **Volume shortcuts** for the monitor's speakers (or its headphone jack): `Ctrl+Alt+Shift+Right` /
+  `Left` by default with their own step (5), and an optional mute toggle. A Mac sending sound to a
+  monitor over DisplayPort or USB-C greys out its own volume control, so this is the way to change it
+  there. Also `volume up`, `volume 40`, `volume mute` / `unmute` / `toggle`.
 - **"Next input"** only cycles through inputs ticked **In Next** (`IncludeInNext`, on by default), so
   you can skip the ports with nothing plugged in. Sadly, a monitor can't be asked which inputs
   actually have a signal: DDC/CI has no standard command for it.
@@ -228,6 +235,7 @@ monitor-input-switcher next
 monitor-input-switcher picture Evening   # apply a picture profile (name is case-insensitive)
 monitor-input-switcher picture           # list the picture profiles
 monitor-input-switcher brightness        # print the brightness; or: brightness up / down / 60 / +5 / -5
+monitor-input-switcher volume            # the monitor's speaker volume, the same way; or: volume mute / unmute / toggle
 monitor-input-switcher get              # e.g. "6927 (0x1B0F) = DisplayPort"
 monitor-input-switcher list             # e.g. "AW3926QW  (/dev/i2c-20, card2-DP-8)"
 monitor-input-switcher capabilities     # model and input codes the monitor reports, plus the raw string
@@ -240,7 +248,7 @@ monitor-input-switcher quit
 On Windows it's `monitor-input-switcher.exe`, from PowerShell or cmd. The commands go to the running
 app (over `$XDG_RUNTIME_DIR/monitor-input-switcher.sock` on Linux, `$TMPDIR/monitor-input-switcher.sock`
 on macOS, a named pipe on Windows), so DDC operations never overlap. If the app isn't running,
-`switch`, `next`, `picture`, `brightness`, `get` and `list` talk to the monitor directly. `export` and
+`switch`, `next`, `picture`, `brightness`, `volume`, `get` and `list` talk to the monitor directly. `export` and
 `import` work either way; `import` has a running app reload the new
 settings.
 
@@ -265,6 +273,10 @@ Every system uses the same JSON format:
   "BrightnessUpHotkey": "Ctrl+Alt+Shift+Up",
   "BrightnessDownHotkey": "Ctrl+Alt+Shift+Down",
   "BrightnessStep": 10,
+  "VolumeUpHotkey": "Ctrl+Alt+Shift+Right",
+  "VolumeDownHotkey": "Ctrl+Alt+Shift+Left",
+  "VolumeStep": 5,
+  "MuteHotkey": null,
   "ShowNotifications": true,
   "ShowStartupNotification": true
 }
@@ -361,7 +373,7 @@ These come from my monitor; yours may behave differently, and the app tries not 
   while Settings is open, so it can record them.
 - **Stuck modifier keys**: with the keyboard on the monitor's USB hub, switching unplugs it while
   Ctrl/Alt/Shift are still held. On Windows those keys stayed pressed, so on an input-switching
-  shortcut (not brightness or picture shortcuts, which can be tapped repeatedly) the app sends key-up events for any held modifier (`SendInput`), waits 30 ms, then switches. On Linux
+  shortcut (not brightness, volume or picture shortcuts, which can be tapped repeatedly) the app sends key-up events for any held modifier (`SendInput`), waits 30 ms, then switches. On Linux
   the kernel removes the keyboard's input device and libinput/KWin release every key held on it, so
   the app switches immediately. macOS behaves like Linux here (the keyboard's device goes away with
   its keys). If modifiers ever do stick, please report it.
